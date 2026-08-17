@@ -1,0 +1,88 @@
+.trip-form-container {
+  max-width: 700px;
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.5rem;
+  padding: 2rem;
+}
+
+.trip-form-container h2 {
+  margin-bottom: 1.5rem;
+  color: #1e293b;
+}
+
+.trip-form {
+  margin-bottom: 2rem;
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+@media (max-width: 600px) {
+  .form-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.form-group label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.help-link {
+  color: #2563eb;
+  text-decoration: none;
+  font-size: 0.75rem;
+  font-weight: normal;
+}
+
+.help-link:hover {
+  text-decoration: underline;
+}
+
+.help-text {
+  display: block;
+  margin-top: 0.25rem;
+  color: #64748b;
+  font-size: 0.8125rem;
+}
+
+.btn-large {
+  width: 100%;
+  padding: 0.75rem 1.5rem;
+  font-size: 1rem;
+  height: auto;
+}
+
+.form-help {
+  background-color: #f0f9ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 0.375rem;
+  padding: 1rem;
+}
+
+.form-help h3 {
+  margin-top: 0;
+  margin-bottom: 0.75rem;
+  color: #1e40af;
+  font-size: 0.9375rem;
+}
+
+.form-help ul {
+  margin: 0;
+  padding-left: 1.5rem;
+}
+
+.form-help li {
+  color: #1e40af;
+  font-size: 0.875rem;
+  margin-bottom: 0.5rem;
+}
+
+.form-help li:last-child {
+  margin-bottom: 0;
+}

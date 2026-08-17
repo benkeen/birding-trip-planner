@@ -1,0 +1,131 @@
+.login-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  padding: 1rem;
+}
+
+.login-box {
+  background: white;
+  padding: 2rem;
+  border-radius: 0.5rem;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+  width: 100%;
+  max-width: 400px;
+}
+
+.login-box h1 {
+  text-align: center;
+  margin-bottom: 0.5rem;
+  color: #1e293b;
+  font-size: 1.875rem;
+}
+
+.subtitle {
+  text-align: center;
+  color: #64748b;
+  margin-bottom: 2rem;
+  font-size: 0.9375rem;
+}
+
+.toggle-auth {
+  text-align: center;
+  margin-top: 1.5rem;
+  color: #64748b;
+  font-size: 0.875rem;
+}
+
+.link-button {
+  background: none;
+  border: none;
+  color: #2563eb;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+  font-size: inherit;
+  font-weight: 500;
+}
+
+.link-button:hover {
+  color: #1e40af;
+}
+
+/* Password field enhancements */
+.password-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.password-label label {
+  margin: 0;
+  font-weight: 500;
+  font-size: 0.875rem;
+  color: #1e293b;
+}
+
+.generate-btn {
+  background: none;
+  border: 1px solid #2563eb;
+  color: #2563eb;
+  cursor: pointer;
+  padding: 0.25rem 0.75rem;
+  border-radius: 0.25rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  transition: all 0.2s ease;
+}
+
+.generate-btn:hover {
+  background-color: #2563eb;
+  color: white;
+}
+
+.generate-btn:active {
+  transform: scale(0.95);
+}
+
+.password-input-wrapper {
+  display: flex;
+  align-items: center;
+  position: relative;
+  width: 100%;
+}
+
+.copy-password-btn,
+.toggle-visibility-btn {
+  position: absolute;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0.5rem;
+  font-size: 1rem;
+  color: #64748b;
+  transition: color 0.2s ease;
+}
+
+.toggle-visibility-btn {
+  right: 0.75rem;
+}
+
+.copy-password-btn {
+  right: 2.5rem;
+  font-size: 0.9375rem;
+}
+
+.copy-password-btn:hover,
+.toggle-visibility-btn:hover {
+  color: #2563eb;
+}
+
+.copy-password-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.password-input-wrapper input {
+  padding-right: 4.5rem;
+}

@@ -1,0 +1,33 @@
+appId: com.birdingtriplanner.app
+productName: Birding Trip Planner
+directories:
+  buildResources: resources
+  output: dist
+files:
+  - from: dist/main
+    to: .
+  - from: dist/renderer
+    to: renderer
+  - from: dist/preload
+    to: .
+    filter:
+      - '**/*'
+extraMetadata:
+  main: dist/main/index.js
+
+mac:
+  category: public.app-category.utilities
+  target:
+    - dmg
+    - zip
+
+win:
+  target:
+    - nsis
+    - portable
+
+linux:
+  category: Utility
+  target:
+    - AppImage
+    - deb
