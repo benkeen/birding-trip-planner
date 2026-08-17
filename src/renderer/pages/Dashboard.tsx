@@ -1,8 +1,10 @@
 import { useState, useEffect } from 'react'
 import type { User, Trip } from '@shared/types'
+import { Button } from '@mui/material'
 import TripForm from './TripForm'
 import TripsList from './TripsList'
 import TripDetails from './TripDetails'
+import LifeListPage from './LifeListPage'
 import SettingsPage from './SettingsPage'
 import './Dashboard.css'
 
@@ -13,9 +15,9 @@ interface DashboardProps {
 }
 
 export default function Dashboard({ user, token, onLogout }: DashboardProps) {
-  const [view, setView] = useState<'list' | 'form' | 'details' | 'settings'>(
-    'list'
-  )
+  const [view, setView] = useState<
+    'list' | 'form' | 'details' | 'lifeList' | 'settings'
+  >('list')
   const [trips, setTrips] = useState<Trip[]>([])
   const [selectedTrip, setSelectedTrip] = useState<Trip | null>(null)
   const [loading, setLoading] = useState(true)
@@ -99,9 +101,9 @@ export default function Dashboard({ user, token, onLogout }: DashboardProps) {
         </div>
         <div className='header-right'>
           <span className='user-email'>{user.email}</span>
-          <button onClick={onLogout} className='btn-secondary'>
+          <Button onClick={onLogout} variant='contained' size='small'>
             Log Out
-          </button>
+          </Button>
         </div>
       </header>
 
@@ -118,6 +120,12 @@ export default function Dashboard({ user, token, onLogout }: DashboardProps) {
             onClick={() => setView('form')}
           >
             Plan New Trip
+          </button>
+          <button
+            className={`nav-button ${view === 'lifeList' ? 'active' : ''}`}
+            onClick={() => setView('lifeList')}
+          >
+            Life List
           </button>
           <button
             className={`nav-button ${view === 'settings' ? 'active' : ''}`}
@@ -141,6 +149,10 @@ export default function Dashboard({ user, token, onLogout }: DashboardProps) {
 
           {view === 'form' && (
             <TripForm onSubmit={handleCreateTrip} token={token} />
+          )}
+
+          {view === 'lifeList' && (
+            <LifeListPage token={token} ebirdApiKey={ebirdApiKey} />
           )}
 
           {view === 'settings' && (

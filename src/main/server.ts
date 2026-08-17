@@ -3,6 +3,12 @@ import cors from 'cors'
 import bodyParser from 'body-parser'
 import bcrypt from 'bcrypt'
 import jwt from 'jsonwebtoken'
+import multer from 'multer'
+import extractZip from 'extract-zip'
+import { parse } from 'csv-parse/sync'
+import fs from 'fs'
+import path from 'path'
+import os from 'os'
 import type {
   AuthPayload,
   AuthResponse,
@@ -1141,6 +1147,236 @@ export function createExpressApp(): express.Application {
   app.get('/api/health', (req: Request, res: Response) => {
     res.json({ status: 'ok' })
   })
+
+  // Life List routes
+  const upload = multer({ storage: multer.memoryStorage() })
+  const lifeListCacheDir = path.join(os.homedir(), '.ebird-cache', 'life-lists')
+
+  // Get cached life list for user
+  app.get('/api/life-list', authMiddleware, (req: Request, res: Response) => {
+    const userId = req.userId!
+    const cacheFile = path.join(lifeListCacheDir, `${userId}.json`)
+
+    try {
+      if (fs.existsSync(cacheFile)) {
+        const data = JSON.parse(fs.readFileSync(cacheFile, 'utf-8'))
+        res.json(data)
+      } else {
+        res.json({ species: [], importedAt: null })
+      }
+    } catch (err) {
+      console.error('Error reading life list cache:', err)
+      res.status(500).json({ error: 'Failed to read life list' })
+    }
+  })
+
+  // Import life list from zip file
+  app.post(
+    '/api/life-list/import',
+    authMiddleware,
+    upload.single('file'),
+    async (req: Request, res: Response) => {
+      const userId = req.userId!
+
+      if (!req.file) {
+        return res.status(400).json({ error: 'No file uploaded' })
+      }
+
+      try {
+        // Create temp directory for extraction
+        const tempDir = path.join(os.tmpdir(), `ebird-${Date.now()}`)
+        fs.mkdirSync(tempDir, { recursive: true })
+
+        // Write uploaded file to temp location
+        const zipPath = path.join(tempDir, 'data.zip')
+        fs.writeFileSync(zipPath, req.file.buffer)
+
+        // Extract zip
+        await extractZip(zipPath, { dir: tempDir })
+
+        // Find and parse CSV
+        const files = fs.readdirSync(tempDir)
+        const csvFile = files.find((f) => f.endsWith('.csv'))
+
+        if (!csvFile) {
+          throw new Error('No CSV file found in zip')
+        }
+
+        const csvPath = path.join(tempDir, csvFile)
+        const csvContent = fs.readFileSync(csvPath, 'utf-8')
+
+        // Parse CSV with lenient column validation for sparse data
+        const records = parse(csvContent, {
+          columns: true,
+          skip_empty_lines: true,
+          relax_column_count: true,
+          relax_column_count_less: true
+        })
+
+        // Aggregate observations by species
+        const speciesMap = new Map<
+          string,
+          {
+            common_name: string
+            scientific_name: string
+            first_seen: Date
+            first_location: string
+            first_location_id: string
+            latitude: number
+            longitude: number
+            total_count: number
+          }
+        >()
+
+        for (const record: any of records) {
+          const commonName = (record['Common Name'] || '').trim()
+          const sciName = (record['Scientific Name'] || '').trim()
+
+          // Skip if either common or scientific name is missing
+          if (!commonName || !sciName) {
+            continue
+          }
+
+          const key = `${commonName}||${sciName}`
+
+          const count = parseInt(record['Count']) || 1
+          const obsDate = new Date(record['Date'] || '')
+          const location = record['Location'] || ''
+          const locationId = record['Location ID'] || ''
+          const lat = parseFloat(record['Latitude']) || 0
+          const lng = parseFloat(record['Longitude']) || 0
+
+          if (!speciesMap.has(key)) {
+            speciesMap.set(key, {
+              common_name: commonName,
+              scientific_name: sciName,
+              first_seen: obsDate,
+              first_location: location,
+              first_location_id: locationId,
+              latitude: lat,
+              longitude: lng,
+              total_count: count
+            })
+          } else {
+            const existing = speciesMap.get(key)!
+            // Update if this observation is earlier
+            if (obsDate < existing.first_seen) {
+              existing.first_seen = obsDate
+              existing.first_location = location
+              existing.first_location_id = locationId
+              existing.latitude = lat
+              existing.longitude = lng
+            }
+            existing.total_count += count
+          }
+        }
+
+        // Convert to array and sort by most recent first sighting
+        const species = Array.from(speciesMap.values())
+          .map((sp) => ({
+            common_name: sp.common_name,
+            scientific_name: sp.scientific_name,
+            date: sp.first_seen.toISOString().split('T')[0],
+            count: sp.total_count,
+            location: sp.first_location,
+            location_id: sp.first_location_id,
+            latitude: sp.latitude,
+            longitude: sp.longitude
+          }))
+          .sort((a, b) => {
+            const dateA = new Date(a.date)
+            const dateB = new Date(b.date)
+            return dateB.getTime() - dateA.getTime()
+          })
+
+        // Cache to disk
+        if (!fs.existsSync(lifeListCacheDir)) {
+          fs.mkdirSync(lifeListCacheDir, { recursive: true })
+        }
+
+        const cacheFile = path.join(lifeListCacheDir, `${userId}.json`)
+        const cacheData = {
+          species,
+          importedAt: new Date().toISOString(),
+          totalSpecies: species.length
+        }
+
+        fs.writeFileSync(cacheFile, JSON.stringify(cacheData, null, 2))
+
+        console.log(`✅ Imported ${species.length} species for user ${userId}`)
+
+        // Clean up temp directory
+        fs.rmSync(tempDir, { recursive: true, force: true })
+
+        res.json(cacheData)
+      } catch (err) {
+        console.error('Error importing life list:', err)
+        res.status(500).json({
+          error: 'Failed to import life list',
+          details: err instanceof Error ? err.message : String(err)
+        })
+      }
+    }
+  )
+
+  // Import EBD (eBird Basic Data) file to identify species taxonomy
+  app.post(
+    '/api/ebd/import',
+    authMiddleware,
+    upload.single('file'),
+    async (req: Request, res: Response) => {
+      const userId = req.userId!
+
+      if (!req.file) {
+        return res.status(400).json({ error: 'No file uploaded' })
+      }
+
+      try {
+        const fileContent = req.file.buffer.toString('utf-8')
+
+        // Parse EBD file (tab-separated with headers)
+        const lines = fileContent.split('\n')
+        if (lines.length < 1) {
+          throw new Error('Empty EBD file')
+        }
+
+        // EBD header line
+        const header = lines[0].split('\t')
+        console.log(`📋 EBD file - Total lines: ${lines.length}`)
+        console.log(`📋 EBD file - Headers: ${header.join(', ')}`)
+
+        // Store EBD metadata to disk
+        const ebdCacheDir = path.join(os.homedir(), '.ebird-cache', 'ebd')
+        if (!fs.existsSync(ebdCacheDir)) {
+          fs.mkdirSync(ebdCacheDir, { recursive: true })
+        }
+
+        const ebdFile = path.join(ebdCacheDir, `${userId}-ebd.json`)
+        const ebdData = {
+          importedAt: new Date().toISOString(),
+          headerCount: header.length,
+          totalLines: lines.length,
+          headers: header
+        }
+
+        fs.writeFileSync(ebdFile, JSON.stringify(ebdData, null, 2))
+
+        console.log(`✅ Imported EBD file for user ${userId}`)
+
+        res.json({
+          status: 'success',
+          message: 'EBD file imported successfully',
+          metadata: ebdData
+        })
+      } catch (err) {
+        console.error('Error importing EBD:', err)
+        res.status(500).json({
+          error: 'Failed to import EBD file',
+          details: err instanceof Error ? err.message : String(err)
+        })
+      }
+    }
+  )
 
   return app
 }

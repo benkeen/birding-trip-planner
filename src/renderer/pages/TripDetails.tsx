@@ -474,7 +474,9 @@ export default function TripDetails({
         <DialogTitle sx={{ pb: 1 }}>Fetching Historic Species Data</DialogTitle>
         <DialogContent sx={{ py: 3 }}>
           <Box sx={{ mb: 2 }}>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
+            <Box
+              sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}
+            >
               <Typography variant='body2'>
                 {progress
                   ? `Fetching: ${progress.current} / ${progress.total} dates`
