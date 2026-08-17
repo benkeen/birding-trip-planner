@@ -9,6 +9,12 @@ import { parse } from 'csv-parse/sync'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
+import {
+  generateRegistrationOptions,
+  verifyRegistrationResponse,
+  generateAuthenticationOptions,
+  verifyAuthenticationResponse
+} from '@simplewebauthn/server'
 import type {
   AuthPayload,
   AuthResponse,
@@ -28,10 +34,36 @@ import {
   deleteTrip,
   getCacheData,
   setCacheData,
-  getOrCreateSpecies
+  getOrCreateSpecies,
+  savePasskey,
+  getPasskeysByUserId,
+  getPasskeyByCredentialId,
+  updatePasskeySignCount,
+  type Passkey
 } from './db'
 
 const JWT_SECRET = 'your-secret-key-change-in-production'
+
+// Challenge storage for WebAuthn (store in memory with expiry)
+interface StoredChallenge {
+  challenge: string
+  userId?: number
+  email?: string
+  timestamp: number
+}
+
+const challengeStore = new Map<string, StoredChallenge>()
+
+// Clean up old challenges every minute
+setInterval(() => {
+  const now = Date.now()
+  const CHALLENGE_EXPIRY = 10 * 60 * 1000 // 10 minutes
+  for (const [key, value] of challengeStore.entries()) {
+    if (now - value.timestamp > CHALLENGE_EXPIRY) {
+      challengeStore.delete(key)
+    }
+  }
+}, 60 * 1000)
 
 export function createExpressApp(): express.Application {
   const app = express()
@@ -119,6 +151,263 @@ export function createExpressApp(): express.Application {
       return res.status(404).json({ error: 'User not found' })
     }
     res.json(user)
+  })
+
+  // Passkey registration (step 1: get registration options)
+  app.post('/api/auth/register-passkey-options', authMiddleware, async (req: Request, res: Response) => {
+    const user = getUserById(req.userId!)
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' })
+    }
+
+    try {
+      const options = await generateRegistrationOptions({
+        rpID: 'localhost',
+        rpName: 'Birding Trip Planner',
+        userID: Buffer.from(user.id.toString()),
+        userName: user.email,
+        userDisplayName: user.email,
+        attestationType: 'none',
+        supportedAlgos: [-7, -257] // ES256, RS256
+      })
+
+      // Store challenge with user ID
+      const challengeKey = Buffer.from(options.challenge, 'base64').toString('hex')
+      challengeStore.set(challengeKey, {
+        challenge: options.challenge,
+        userId: user.id,
+        timestamp: Date.now()
+      })
+
+      res.json(options)
+    } catch (err) {
+      console.error('Error generating registration options:', err)
+      res.status(500).json({ error: 'Failed to generate registration options' })
+    }
+  })
+
+  // Passkey registration (step 2: verify registration)
+  app.post('/api/auth/verify-passkey-registration', authMiddleware, async (req: Request, res: Response) => {
+    const user = getUserById(req.userId!)
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' })
+    }
+
+    const { credential, challenge } = req.body
+
+    try {
+      // Retrieve the stored challenge
+      const challengeKey = Buffer.from(challenge, 'base64').toString('hex')
+      const storedChallenge = challengeStore.get(challengeKey)
+
+      if (!storedChallenge || storedChallenge.userId !== user.id) {
+        return res.status(400).json({ error: 'Invalid or expired challenge' })
+      }
+
+      const verified = await verifyRegistrationResponse({
+        response: credential,
+        expectedChallenge: storedChallenge.challenge,
+        expectedOrigin: 'electron:///',
+        expectedRPID: 'localhost'
+      })
+
+      // Clean up the used challenge
+      challengeStore.delete(challengeKey)
+
+      if (verified.verified && verified.registrationInfo) {
+        const passkey = savePasskey(
+          user.id,
+          Buffer.from(verified.registrationInfo.credentialID),
+          Buffer.from(verified.registrationInfo.credentialPublicKey),
+          verified.registrationInfo.credentialDeviceType === 'multiDevice'
+            ? ['hybrid']
+            : ['internal', 'platform']
+        )
+
+        res.json({ success: true, passkey })
+      } else {
+        res.status(400).json({ error: 'Registration verification failed' })
+      }
+    } catch (err) {
+      console.error('Error verifying registration:', err)
+      res.status(500).json({ error: 'Failed to verify registration' })
+    }
+  })
+
+  // Passkey authentication (step 1: get authentication options)
+  app.post('/api/auth/authenticate-passkey-options', async (req: Request, res: Response) => {
+    const { email } = req.body
+
+    try {
+      const options = await generateAuthenticationOptions({
+        rpID: 'localhost',
+        allowCredentials: [] // Allow all credentials for this user
+      })
+
+      // Store challenge with email
+      const challengeKey = Buffer.from(options.challenge, 'base64').toString('hex')
+      challengeStore.set(challengeKey, {
+        challenge: options.challenge,
+        email,
+        timestamp: Date.now()
+      })
+
+      res.json(options)
+    } catch (err) {
+      console.error('Error generating auth options:', err)
+      res.status(500).json({ error: 'Failed to generate authentication options' })
+    }
+  })
+
+  // Passkey authentication (step 2: verify authentication)
+  app.post('/api/auth/verify-passkey-authentication', async (req: Request, res: Response) => {
+    const { credential, challenge } = req.body
+
+    try {
+      // Retrieve the stored challenge
+      const challengeKey = Buffer.from(challenge, 'base64').toString('hex')
+      const storedChallenge = challengeStore.get(challengeKey)
+
+      if (!storedChallenge || !storedChallenge.email) {
+        return res.status(400).json({ error: 'Invalid or expired challenge' })
+      }
+
+      const user = getUserByEmail(storedChallenge.email)
+      if (!user) {
+        return res.status(401).json({ error: 'User not found' })
+      }
+
+      const passkeys = getPasskeysByUserId(user.id)
+      const credentialIdBuffer = Buffer.from(credential.id, 'base64')
+      const passkey = passkeys.find((pk) => pk.credential_id.equals(credentialIdBuffer))
+
+      if (!passkey) {
+        return res.status(401).json({ error: 'Passkey not found' })
+      }
+
+      const verified = await verifyAuthenticationResponse({
+        response: credential,
+        expectedChallenge: storedChallenge.challenge,
+        expectedOrigin: 'electron:///',
+        expectedRPID: 'localhost',
+        credential: {
+          id: passkey.credential_id,
+          publicKey: passkey.public_key,
+          signCount: passkey.sign_count,
+          transports: passkey.transports ? JSON.parse(passkey.transports) : undefined
+        }
+      })
+
+      // Clean up the used challenge
+      challengeStore.delete(challengeKey)
+
+      if (verified.verified) {
+        // Update sign count
+        updatePasskeySignCount(passkey.id, verified.authenticationInfo.newSignCount)
+
+        const token = jwt.sign({ userId: user.id }, JWT_SECRET, {
+          expiresIn: '7d'
+        })
+        res.json({ token, user } as AuthResponse)
+      } else {
+        res.status(401).json({ error: 'Authentication verification failed' })
+      }
+    } catch (err) {
+      console.error('Error verifying authentication:', err)
+      res.status(500).json({ error: 'Failed to verify authentication' })
+    }
+  })
+
+  // Passkey recovery (step 1: get registration options for account recovery)
+  app.post('/api/auth/recover-passkey-options', async (req: Request, res: Response) => {
+    const { email } = req.body
+
+    try {
+      const user = getUserByEmail(email)
+      if (!user) {
+        return res.status(404).json({ error: 'User not found' })
+      }
+
+      const options = await generateRegistrationOptions({
+        rpID: 'localhost',
+        rpName: 'Birding Trip Planner',
+        userID: user.id.toString(),
+        userName: email,
+        userDisplayName: email,
+        attestationType: 'none',
+        authenticatorSelection: {
+          authenticatorAttachment: 'platform',
+          residentKey: 'preferred'
+        }
+      })
+
+      // Store challenge with userId and email for recovery
+      const challengeKey = Buffer.from(options.challenge, 'base64').toString('hex')
+      challengeStore.set(challengeKey, {
+        challenge: options.challenge,
+        userId: user.id,
+        email,
+        timestamp: Date.now()
+      })
+
+      res.json(options)
+    } catch (err) {
+      console.error('Error generating recovery options:', err)
+      res.status(500).json({ error: 'Failed to generate recovery options' })
+    }
+  })
+
+  // Passkey recovery (step 2: verify and register passkey for account recovery)
+  app.post('/api/auth/verify-passkey-recovery', async (req: Request, res: Response) => {
+    const { credential, challenge } = req.body
+
+    try {
+      // Retrieve the stored challenge
+      const challengeKey = Buffer.from(challenge, 'base64').toString('hex')
+      const storedChallenge = challengeStore.get(challengeKey)
+
+      if (!storedChallenge || !storedChallenge.userId) {
+        return res.status(400).json({ error: 'Invalid or expired challenge' })
+      }
+
+      const userId = storedChallenge.userId
+      const user = getUserById(userId)
+      if (!user) {
+        return res.status(401).json({ error: 'User not found' })
+      }
+
+      const verified = await verifyRegistrationResponse({
+        response: credential,
+        expectedChallenge: storedChallenge.challenge,
+        expectedOrigin: 'electron:///',
+        expectedRPID: 'localhost'
+      })
+
+      // Clean up the used challenge
+      challengeStore.delete(challengeKey)
+
+      if (verified.verified) {
+        // Save the passkey to the user's account
+        const passkey = savePasskey(
+          userId,
+          Buffer.from(verified.registrationInfo!.credentialID),
+          Buffer.from(verified.registrationInfo!.credentialPublicKey),
+          verified.registrationInfo!.credentialDeviceType === 'multiDevice'
+            ? ['hybrid']
+            : ['internal', 'platform']
+        )
+
+        const token = jwt.sign({ userId }, JWT_SECRET, {
+          expiresIn: '7d'
+        })
+        res.json({ token, user, passkey } as AuthResponse & { passkey: any })
+      } else {
+        res.status(400).json({ error: 'Recovery verification failed' })
+      }
+    } catch (err) {
+      console.error('Error verifying recovery:', err)
+      res.status(500).json({ error: 'Failed to verify recovery' })
+    }
   })
 
   // eBird API proxy routes

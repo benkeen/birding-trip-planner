@@ -7,6 +7,19 @@ CREATE TABLE IF NOT EXISTS users (
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Passkeys table (for WebAuthn authentication)
+CREATE TABLE IF NOT EXISTS passkeys (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  credential_id BLOB NOT NULL,
+  public_key BLOB NOT NULL,
+  sign_count INTEGER DEFAULT 0,
+  transports TEXT,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  UNIQUE(user_id, credential_id)
+);
+
 -- Trips table
 CREATE TABLE IF NOT EXISTS trips (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -59,5 +72,6 @@ CREATE TABLE IF NOT EXISTS trip_species (
 
 -- Create indexes for common queries
 CREATE INDEX IF NOT EXISTS idx_trips_user_id ON trips(user_id);
+CREATE INDEX IF NOT EXISTS idx_passkeys_user_id ON passkeys(user_id);
 CREATE INDEX IF NOT EXISTS idx_trip_cache_trip_id ON trip_cache(trip_id);
 CREATE INDEX IF NOT EXISTS idx_trip_species_trip_id ON trip_species(trip_id);

@@ -450,16 +450,16 @@ export default function TripDetails({
 
       {/* Load Button */}
       {!hasLoaded && (
-        <Button
-          fullWidth
-          size='large'
-          variant='contained'
-          onClick={() => loadSpecies(false)}
-          disabled={loading}
-          sx={{ mb: 3, boxShadow: 'none' }}
-        >
-          {loading ? 'Loading Species...' : 'Load Target Species'}
-        </Button>
+        <Box sx={{ mb: 3 }}>
+          <Button
+            size='medium'
+            variant='contained'
+            onClick={() => loadSpecies(false)}
+            disabled={loading}
+          >
+            {loading ? 'Loading Species...' : 'Load Target Species'}
+          </Button>
+        </Box>
       )}
 
       {/* Error Alert */}

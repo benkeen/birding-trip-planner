@@ -188,6 +188,53 @@ export function getOrCreateSpecies(
   return db.prepare('SELECT * FROM species WHERE code = ?').get(code) as Species
 }
 
+// Passkey queries
+export interface Passkey {
+  id: number
+  user_id: number
+  credential_id: Buffer
+  public_key: Buffer
+  sign_count: number
+  transports: string | null
+  created_at: string
+}
+
+export function savePasskey(
+  userId: number,
+  credentialId: Buffer,
+  publicKey: Buffer,
+  transports?: string[]
+): Passkey {
+  const db = getDatabase()
+  const stmt = db.prepare(
+    'INSERT INTO passkeys (user_id, credential_id, public_key, transports) VALUES (?, ?, ?, ?)'
+  )
+  stmt.run(userId, credentialId, publicKey, transports ? JSON.stringify(transports) : null)
+
+  const passkey = db
+    .prepare('SELECT * FROM passkeys WHERE user_id = ? ORDER BY created_at DESC LIMIT 1')
+    .get(userId) as Passkey
+  return passkey
+}
+
+export function getPasskeysByUserId(userId: number): Passkey[] {
+  const db = getDatabase()
+  const stmt = db.prepare('SELECT * FROM passkeys WHERE user_id = ?')
+  return stmt.all(userId) as Passkey[]
+}
+
+export function getPasskeyByCredentialId(credentialId: Buffer): (Passkey & { user_id: number }) | null {
+  const db = getDatabase()
+  const stmt = db.prepare('SELECT * FROM passkeys WHERE credential_id = ?')
+  return stmt.get(credentialId) as (Passkey & { user_id: number }) | null
+}
+
+export function updatePasskeySignCount(passkeyId: number, signCount: number): void {
+  const db = getDatabase()
+  const stmt = db.prepare('UPDATE passkeys SET sign_count = ? WHERE id = ?')
+  stmt.run(signCount, passkeyId)
+}
+
 export function closeDatabase(): void {
   if (db) {
     db.close()

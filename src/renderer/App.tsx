@@ -18,6 +18,13 @@ const theme = createTheme({
       'Roboto',
       'sans-serif'
     ].join(',')
+  },
+  components: {
+    MuiButton: {
+      defaultProps: {
+        disableElevation: true
+      }
+    }
   }
 })
 
