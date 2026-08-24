@@ -21,6 +21,7 @@ export default function Dashboard({ user, token, onLogout }: DashboardProps) {
   const [trips, setTrips] = useState<Trip[]>([])
   const [selectedTrip, setSelectedTrip] = useState<Trip | null>(null)
   const [loading, setLoading] = useState(true)
+  const [tripError, setTripError] = useState<string>('')
   const [ebirdApiKey, setEbirdApiKey] = useState<string>(
     () => localStorage.getItem('ebird_api_key') ?? ''
   )
@@ -49,6 +50,7 @@ export default function Dashboard({ user, token, onLogout }: DashboardProps) {
   }
 
   const handleCreateTrip = async (tripData: any) => {
+    setTripError('')
     try {
       const response = await fetch('http://localhost:3000/api/trips', {
         method: 'POST',
@@ -63,8 +65,15 @@ export default function Dashboard({ user, token, onLogout }: DashboardProps) {
         const newTrip = await response.json()
         setTrips([newTrip, ...trips])
         setView('list')
+      } else {
+        const errorData = await response.json()
+        const errorMsg = errorData.error || `Server error (${response.status})`
+        setTripError(errorMsg)
+        console.error('Failed to create trip:', errorMsg)
       }
     } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : 'Unknown error'
+      setTripError(errorMsg)
       console.error('Failed to create trip:', err)
     }
   }
@@ -148,7 +157,7 @@ export default function Dashboard({ user, token, onLogout }: DashboardProps) {
           )}
 
           {view === 'form' && (
-            <TripForm onSubmit={handleCreateTrip} token={token} />
+            <TripForm onSubmit={handleCreateTrip} token={token} error={tripError} />
           )}
 
           {view === 'lifeList' && (

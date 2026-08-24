@@ -1,69 +1,23 @@
 import express, { Request, Response, NextFunction } from 'express'
 import cors from 'cors'
 import bodyParser from 'body-parser'
-import bcrypt from 'bcrypt'
-import jwt from 'jsonwebtoken'
 import multer from 'multer'
 import extractZip from 'extract-zip'
 import { parse } from 'csv-parse/sync'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
-import {
-  generateRegistrationOptions,
-  verifyRegistrationResponse,
-  generateAuthenticationOptions,
-  verifyAuthenticationResponse
-} from '@simplewebauthn/server'
 import type {
-  AuthPayload,
-  AuthResponse,
-  User,
   CreateTripRequest
 } from '@shared/types'
 import { HistoricDataCache, ThrottledRequester } from './cache'
 import {
-  getUserByEmail,
-  createUser,
-  getUserById,
-  getUserPasswordHash,
   getUserTrips,
   getTripById,
   createTrip,
   updateTrip,
-  deleteTrip,
-  getCacheData,
-  setCacheData,
-  getOrCreateSpecies,
-  savePasskey,
-  getPasskeysByUserId,
-  getPasskeyByCredentialId,
-  updatePasskeySignCount,
-  type Passkey
+  deleteTrip
 } from './db'
-
-const JWT_SECRET = 'your-secret-key-change-in-production'
-
-// Challenge storage for WebAuthn (store in memory with expiry)
-interface StoredChallenge {
-  challenge: string
-  userId?: number
-  email?: string
-  timestamp: number
-}
-
-const challengeStore = new Map<string, StoredChallenge>()
-
-// Clean up old challenges every minute
-setInterval(() => {
-  const now = Date.now()
-  const CHALLENGE_EXPIRY = 10 * 60 * 1000 // 10 minutes
-  for (const [key, value] of challengeStore.entries()) {
-    if (now - value.timestamp > CHALLENGE_EXPIRY) {
-      challengeStore.delete(key)
-    }
-  }
-}, 60 * 1000)
 
 export function createExpressApp(): express.Application {
   const app = express()
@@ -71,344 +25,11 @@ export function createExpressApp(): express.Application {
   app.use(cors())
   app.use(bodyParser.json())
 
-  // Middleware to verify JWT token
+  // Local auth middleware - sets default user for local app without auth
   const authMiddleware = (req: Request, res: Response, next: NextFunction) => {
-    const token = req.headers.authorization?.split(' ')[1]
-    if (!token) {
-      return res.status(401).json({ error: 'No token provided' })
-    }
-
-    try {
-      const decoded = jwt.verify(token, JWT_SECRET) as { userId: number }
-      req.userId = decoded.userId
-      next()
-    } catch (err) {
-      res.status(401).json({ error: 'Invalid token' })
-    }
+    req.userId = 1 // Default local user ID
+    next()
   }
-
-  // Auth routes
-  app.post('/api/auth/signup', async (req: Request, res: Response) => {
-    const { email, password } = req.body as AuthPayload
-
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password required' })
-    }
-
-    const existing = getUserByEmail(email)
-    if (existing) {
-      return res.status(409).json({ error: 'User already exists' })
-    }
-
-    try {
-      const passwordHash = await bcrypt.hash(password, 10)
-      const user = createUser(email, passwordHash)
-      const token = jwt.sign({ userId: user.id }, JWT_SECRET, {
-        expiresIn: '7d'
-      })
-      res.json({ token, user } as AuthResponse)
-    } catch (err) {
-      res.status(500).json({ error: 'Failed to create user' })
-    }
-  })
-
-  app.post('/api/auth/login', async (req: Request, res: Response) => {
-    const { email, password } = req.body as AuthPayload
-
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password required' })
-    }
-
-    const user = getUserByEmail(email)
-    if (!user) {
-      return res.status(401).json({ error: 'Invalid credentials' })
-    }
-
-    try {
-      const passwordHash = getUserPasswordHash(email)
-      if (!passwordHash) {
-        return res.status(401).json({ error: 'Invalid credentials' })
-      }
-
-      const valid = await bcrypt.compare(password, passwordHash)
-      if (!valid) {
-        return res.status(401).json({ error: 'Invalid credentials' })
-      }
-
-      const token = jwt.sign({ userId: user.id }, JWT_SECRET, {
-        expiresIn: '7d'
-      })
-      res.json({ token, user } as AuthResponse)
-    } catch (err) {
-      res.status(500).json({ error: 'Login failed' })
-    }
-  })
-
-  // Get current user
-  app.get('/api/auth/me', authMiddleware, (req: Request, res: Response) => {
-    const user = getUserById(req.userId!)
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' })
-    }
-    res.json(user)
-  })
-
-  // Passkey registration (step 1: get registration options)
-  app.post('/api/auth/register-passkey-options', authMiddleware, async (req: Request, res: Response) => {
-    const user = getUserById(req.userId!)
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' })
-    }
-
-    try {
-      const options = await generateRegistrationOptions({
-        rpID: 'localhost',
-        rpName: 'Birding Trip Planner',
-        userID: Buffer.from(user.id.toString()),
-        userName: user.email,
-        userDisplayName: user.email,
-        attestationType: 'none',
-        supportedAlgos: [-7, -257] // ES256, RS256
-      })
-
-      // Store challenge with user ID
-      const challengeKey = Buffer.from(options.challenge, 'base64').toString('hex')
-      challengeStore.set(challengeKey, {
-        challenge: options.challenge,
-        userId: user.id,
-        timestamp: Date.now()
-      })
-
-      res.json(options)
-    } catch (err) {
-      console.error('Error generating registration options:', err)
-      res.status(500).json({ error: 'Failed to generate registration options' })
-    }
-  })
-
-  // Passkey registration (step 2: verify registration)
-  app.post('/api/auth/verify-passkey-registration', authMiddleware, async (req: Request, res: Response) => {
-    const user = getUserById(req.userId!)
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' })
-    }
-
-    const { credential, challenge } = req.body
-
-    try {
-      // Retrieve the stored challenge
-      const challengeKey = Buffer.from(challenge, 'base64').toString('hex')
-      const storedChallenge = challengeStore.get(challengeKey)
-
-      if (!storedChallenge || storedChallenge.userId !== user.id) {
-        return res.status(400).json({ error: 'Invalid or expired challenge' })
-      }
-
-      const verified = await verifyRegistrationResponse({
-        response: credential,
-        expectedChallenge: storedChallenge.challenge,
-        expectedOrigin: 'electron:///',
-        expectedRPID: 'localhost'
-      })
-
-      // Clean up the used challenge
-      challengeStore.delete(challengeKey)
-
-      if (verified.verified && verified.registrationInfo) {
-        const passkey = savePasskey(
-          user.id,
-          Buffer.from(verified.registrationInfo.credentialID),
-          Buffer.from(verified.registrationInfo.credentialPublicKey),
-          verified.registrationInfo.credentialDeviceType === 'multiDevice'
-            ? ['hybrid']
-            : ['internal', 'platform']
-        )
-
-        res.json({ success: true, passkey })
-      } else {
-        res.status(400).json({ error: 'Registration verification failed' })
-      }
-    } catch (err) {
-      console.error('Error verifying registration:', err)
-      res.status(500).json({ error: 'Failed to verify registration' })
-    }
-  })
-
-  // Passkey authentication (step 1: get authentication options)
-  app.post('/api/auth/authenticate-passkey-options', async (req: Request, res: Response) => {
-    const { email } = req.body
-
-    try {
-      const options = await generateAuthenticationOptions({
-        rpID: 'localhost',
-        allowCredentials: [] // Allow all credentials for this user
-      })
-
-      // Store challenge with email
-      const challengeKey = Buffer.from(options.challenge, 'base64').toString('hex')
-      challengeStore.set(challengeKey, {
-        challenge: options.challenge,
-        email,
-        timestamp: Date.now()
-      })
-
-      res.json(options)
-    } catch (err) {
-      console.error('Error generating auth options:', err)
-      res.status(500).json({ error: 'Failed to generate authentication options' })
-    }
-  })
-
-  // Passkey authentication (step 2: verify authentication)
-  app.post('/api/auth/verify-passkey-authentication', async (req: Request, res: Response) => {
-    const { credential, challenge } = req.body
-
-    try {
-      // Retrieve the stored challenge
-      const challengeKey = Buffer.from(challenge, 'base64').toString('hex')
-      const storedChallenge = challengeStore.get(challengeKey)
-
-      if (!storedChallenge || !storedChallenge.email) {
-        return res.status(400).json({ error: 'Invalid or expired challenge' })
-      }
-
-      const user = getUserByEmail(storedChallenge.email)
-      if (!user) {
-        return res.status(401).json({ error: 'User not found' })
-      }
-
-      const passkeys = getPasskeysByUserId(user.id)
-      const credentialIdBuffer = Buffer.from(credential.id, 'base64')
-      const passkey = passkeys.find((pk) => pk.credential_id.equals(credentialIdBuffer))
-
-      if (!passkey) {
-        return res.status(401).json({ error: 'Passkey not found' })
-      }
-
-      const verified = await verifyAuthenticationResponse({
-        response: credential,
-        expectedChallenge: storedChallenge.challenge,
-        expectedOrigin: 'electron:///',
-        expectedRPID: 'localhost',
-        credential: {
-          id: passkey.credential_id,
-          publicKey: passkey.public_key,
-          signCount: passkey.sign_count,
-          transports: passkey.transports ? JSON.parse(passkey.transports) : undefined
-        }
-      })
-
-      // Clean up the used challenge
-      challengeStore.delete(challengeKey)
-
-      if (verified.verified) {
-        // Update sign count
-        updatePasskeySignCount(passkey.id, verified.authenticationInfo.newSignCount)
-
-        const token = jwt.sign({ userId: user.id }, JWT_SECRET, {
-          expiresIn: '7d'
-        })
-        res.json({ token, user } as AuthResponse)
-      } else {
-        res.status(401).json({ error: 'Authentication verification failed' })
-      }
-    } catch (err) {
-      console.error('Error verifying authentication:', err)
-      res.status(500).json({ error: 'Failed to verify authentication' })
-    }
-  })
-
-  // Passkey recovery (step 1: get registration options for account recovery)
-  app.post('/api/auth/recover-passkey-options', async (req: Request, res: Response) => {
-    const { email } = req.body
-
-    try {
-      const user = getUserByEmail(email)
-      if (!user) {
-        return res.status(404).json({ error: 'User not found' })
-      }
-
-      const options = await generateRegistrationOptions({
-        rpID: 'localhost',
-        rpName: 'Birding Trip Planner',
-        userID: user.id.toString(),
-        userName: email,
-        userDisplayName: email,
-        attestationType: 'none',
-        authenticatorSelection: {
-          authenticatorAttachment: 'platform',
-          residentKey: 'preferred'
-        }
-      })
-
-      // Store challenge with userId and email for recovery
-      const challengeKey = Buffer.from(options.challenge, 'base64').toString('hex')
-      challengeStore.set(challengeKey, {
-        challenge: options.challenge,
-        userId: user.id,
-        email,
-        timestamp: Date.now()
-      })
-
-      res.json(options)
-    } catch (err) {
-      console.error('Error generating recovery options:', err)
-      res.status(500).json({ error: 'Failed to generate recovery options' })
-    }
-  })
-
-  // Passkey recovery (step 2: verify and register passkey for account recovery)
-  app.post('/api/auth/verify-passkey-recovery', async (req: Request, res: Response) => {
-    const { credential, challenge } = req.body
-
-    try {
-      // Retrieve the stored challenge
-      const challengeKey = Buffer.from(challenge, 'base64').toString('hex')
-      const storedChallenge = challengeStore.get(challengeKey)
-
-      if (!storedChallenge || !storedChallenge.userId) {
-        return res.status(400).json({ error: 'Invalid or expired challenge' })
-      }
-
-      const userId = storedChallenge.userId
-      const user = getUserById(userId)
-      if (!user) {
-        return res.status(401).json({ error: 'User not found' })
-      }
-
-      const verified = await verifyRegistrationResponse({
-        response: credential,
-        expectedChallenge: storedChallenge.challenge,
-        expectedOrigin: 'electron:///',
-        expectedRPID: 'localhost'
-      })
-
-      // Clean up the used challenge
-      challengeStore.delete(challengeKey)
-
-      if (verified.verified) {
-        // Save the passkey to the user's account
-        const passkey = savePasskey(
-          userId,
-          Buffer.from(verified.registrationInfo!.credentialID),
-          Buffer.from(verified.registrationInfo!.credentialPublicKey),
-          verified.registrationInfo!.credentialDeviceType === 'multiDevice'
-            ? ['hybrid']
-            : ['internal', 'platform']
-        )
-
-        const token = jwt.sign({ userId }, JWT_SECRET, {
-          expiresIn: '7d'
-        })
-        res.json({ token, user, passkey } as AuthResponse & { passkey: any })
-      } else {
-        res.status(400).json({ error: 'Recovery verification failed' })
-      }
-    } catch (err) {
-      console.error('Error verifying recovery:', err)
-      res.status(500).json({ error: 'Failed to verify recovery' })
-    }
-  })
 
   // eBird API proxy routes
   const EBIRD_API_BASE = 'https://api.ebird.org/v2'
@@ -1397,7 +1018,11 @@ export function createExpressApp(): express.Application {
         )
         res.status(201).json(trip)
       } catch (err) {
-        res.status(500).json({ error: 'Failed to create trip' })
+        console.error('Error creating trip:', err)
+        res.status(500).json({
+          error: 'Failed to create trip',
+          details: err instanceof Error ? err.message : String(err)
+        })
       }
     }
   )
@@ -1608,9 +1233,28 @@ export function createExpressApp(): express.Application {
     }
   )
 
-  // Import EBD (eBird Basic Data) file to identify species taxonomy
+  // Get taxonomy CSV import status for user
+  app.get('/api/taxonomy-csv', authMiddleware, (req: Request, res: Response) => {
+    const userId = req.userId!
+    const taxonomyCSVCacheDir = path.join(os.homedir(), '.ebird-cache', 'taxonomy-csv')
+    const taxonomyCSVFile = path.join(taxonomyCSVCacheDir, `${userId}-taxonomy.json`)
+
+    try {
+      if (fs.existsSync(taxonomyCSVFile)) {
+        const data = JSON.parse(fs.readFileSync(taxonomyCSVFile, 'utf-8'))
+        res.json(data)
+      } else {
+        res.json({ importedAt: null })
+      }
+    } catch (err) {
+      console.error('Error reading taxonomy CSV status:', err)
+      res.status(500).json({ error: 'Failed to read taxonomy CSV status' })
+    }
+  })
+
+  // Import taxonomy CSV file to identify species taxonomy
   app.post(
-    '/api/ebd/import',
+    '/api/taxonomy-csv/import',
     authMiddleware,
     upload.single('file'),
     async (req: Request, res: Response) => {
@@ -1623,44 +1267,44 @@ export function createExpressApp(): express.Application {
       try {
         const fileContent = req.file.buffer.toString('utf-8')
 
-        // Parse EBD file (tab-separated with headers)
+        // Parse taxonomy CSV file (tab-separated with headers)
         const lines = fileContent.split('\n')
         if (lines.length < 1) {
-          throw new Error('Empty EBD file')
+          throw new Error('Empty taxonomy CSV file')
         }
 
-        // EBD header line
+        // CSV header line
         const header = lines[0].split('\t')
-        console.log(`📋 EBD file - Total lines: ${lines.length}`)
-        console.log(`📋 EBD file - Headers: ${header.join(', ')}`)
+        console.log(`📋 Taxonomy CSV file - Total lines: ${lines.length}`)
+        console.log(`📋 Taxonomy CSV file - Headers: ${header.join(', ')}`)
 
-        // Store EBD metadata to disk
-        const ebdCacheDir = path.join(os.homedir(), '.ebird-cache', 'ebd')
-        if (!fs.existsSync(ebdCacheDir)) {
-          fs.mkdirSync(ebdCacheDir, { recursive: true })
+        // Store taxonomy CSV metadata to disk
+        const taxonomyCSVCacheDir = path.join(os.homedir(), '.ebird-cache', 'taxonomy-csv')
+        if (!fs.existsSync(taxonomyCSVCacheDir)) {
+          fs.mkdirSync(taxonomyCSVCacheDir, { recursive: true })
         }
 
-        const ebdFile = path.join(ebdCacheDir, `${userId}-ebd.json`)
-        const ebdData = {
+        const taxonomyCSVFile = path.join(taxonomyCSVCacheDir, `${userId}-taxonomy.json`)
+        const taxonomyCSVData = {
           importedAt: new Date().toISOString(),
           headerCount: header.length,
           totalLines: lines.length,
           headers: header
         }
 
-        fs.writeFileSync(ebdFile, JSON.stringify(ebdData, null, 2))
+        fs.writeFileSync(taxonomyCSVFile, JSON.stringify(taxonomyCSVData, null, 2))
 
-        console.log(`✅ Imported EBD file for user ${userId}`)
+        console.log(`✅ Imported taxonomy CSV for user ${userId}`)
 
         res.json({
           status: 'success',
-          message: 'EBD file imported successfully',
-          metadata: ebdData
+          message: 'Taxonomy CSV imported successfully',
+          metadata: taxonomyCSVData
         })
       } catch (err) {
-        console.error('Error importing EBD:', err)
+        console.error('Error importing taxonomy CSV:', err)
         res.status(500).json({
-          error: 'Failed to import EBD file',
+          error: 'Failed to import taxonomy CSV',
           details: err instanceof Error ? err.message : String(err)
         })
       }

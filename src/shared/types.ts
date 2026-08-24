@@ -6,16 +6,6 @@ export interface User {
   updated_at: string
 }
 
-export interface AuthPayload {
-  email: string
-  password: string
-}
-
-export interface AuthResponse {
-  token: string
-  user: User
-}
-
 // Trip types
 export interface Trip {
   id: number

@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import {
   Alert,
   Box,
@@ -36,9 +36,31 @@ export default function SettingsPage({
   const [validationError, setValidationError] = useState('')
   const [toastOpen, setToastOpen] = useState(false)
   const [toastMessage, setToastMessage] = useState('')
-  const [ebdLoading, setEbdLoading] = useState(false)
-  const [ebdError, setEbdError] = useState('')
-  const ebdFileInputRef = useRef<HTMLInputElement>(null)
+  const [taxonomyCSVLoading, setTaxonomyCSVLoading] = useState(false)
+  const [taxonomyCSVError, setTaxonomyCSVError] = useState('')
+  const [taxonomyCSVImportedAt, setTaxonomyCSVImportedAt] = useState<string | null>(null)
+  const taxonomyCSVFileInputRef = useRef<HTMLInputElement>(null)
+
+  // Fetch taxonomy CSV import status on component mount
+  useEffect(() => {
+    const fetchTaxonomyCSVStatus = async () => {
+      try {
+        const response = await fetch('http://localhost:3000/api/taxonomy-csv', {
+          headers: {
+            Authorization: `Bearer ${localStorage.getItem('auth_token')}`
+          }
+        })
+        if (response.ok) {
+          const data = await response.json()
+          setTaxonomyCSVImportedAt(data.importedAt || null)
+        }
+      } catch (err) {
+        console.error('Failed to fetch taxonomy CSV status:', err)
+      }
+    }
+
+    fetchTaxonomyCSVStatus()
+  }, [])
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -79,24 +101,24 @@ export default function SettingsPage({
     setToastOpen(true)
   }
 
-  const handleImportEbd = () => {
-    ebdFileInputRef.current?.click()
+  const handleImportTaxonomyCSV = () => {
+    taxonomyCSVFileInputRef.current?.click()
   }
 
-  const handleEbdFileSelect = async (
+  const handleTaxonomyCSVFileSelect = async (
     e: React.ChangeEvent<HTMLInputElement>
   ) => {
     const file = e.target.files?.[0]
     if (!file) return
 
-    setEbdLoading(true)
-    setEbdError('')
+    setTaxonomyCSVLoading(true)
+    setTaxonomyCSVError('')
 
     try {
       const formData = new FormData()
       formData.append('file', file)
 
-      const response = await fetch('http://localhost:3000/api/ebd/import', {
+      const response = await fetch('http://localhost:3000/api/taxonomy-csv/import', {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${localStorage.getItem('auth_token')}`
@@ -108,19 +130,20 @@ export default function SettingsPage({
         throw new Error(`Upload failed: ${response.status}`)
       }
 
-      setToastMessage('EBD data imported successfully!')
+      setToastMessage('Taxonomy CSV imported successfully!')
       setToastOpen(true)
-      console.log('✨ Imported EBD data')
+      setTaxonomyCSVImportedAt(new Date().toISOString())
+      console.log('✨ Imported taxonomy CSV')
     } catch (err) {
-      console.error('Failed to import EBD:', err)
-      setEbdError(
-        err instanceof Error ? err.message : 'Failed to import EBD data'
+      console.error('Failed to import taxonomy CSV:', err)
+      setTaxonomyCSVError(
+        err instanceof Error ? err.message : 'Failed to import taxonomy CSV'
       )
     } finally {
-      setEbdLoading(false)
+      setTaxonomyCSVLoading(false)
       // Reset file input
-      if (ebdFileInputRef.current) {
-        ebdFileInputRef.current.value = ''
+      if (taxonomyCSVFileInputRef.current) {
+        taxonomyCSVFileInputRef.current.value = ''
       }
     }
   }
@@ -235,12 +258,12 @@ export default function SettingsPage({
 
       <Paper variant='outlined' sx={{ p: 3, mt: 2 }}>
         <Typography variant='subtitle1' fontWeight={600} gutterBottom>
-          eBird Basic Data (EBD)
+          Clements Checklist
         </Typography>
         <Typography variant='body2' color='text.secondary' sx={{ mb: 2 }}>
-          To use this tool you need to request and download the eBird Basic
-          Dataset (EBD) from eBird. This contains the full, current taxonomy
-          which is used for species matching and validation.
+          Download the latest Clements Checklist in CSV format from the Cornell
+          Lab of Ornithology. This contains the current taxonomy which is used
+          for species matching and validation.
           <Box
             component='span'
             sx={{
@@ -253,13 +276,13 @@ export default function SettingsPage({
               color: 'text.primary'
             }}
           >
-            ebird.org/data/download
+            birds.cornell.edu/clementschecklist
             <Tooltip title='Copy URL'>
               <IconButton
                 size='small'
                 onClick={async () => {
                   await navigator.clipboard.writeText(
-                    'https://ebird.org/data/download'
+                    'https://www.birds.cornell.edu/clementschecklist/introduction/updateindex/'
                   )
                   setToastMessage('URL copied to clipboard')
                   setToastOpen(true)
@@ -272,28 +295,41 @@ export default function SettingsPage({
           </Box>
         </Typography>
 
-        {ebdError && (
+        {taxonomyCSVError && (
           <Alert severity='error' sx={{ mb: 2 }}>
-            {ebdError}
+            {taxonomyCSVError}
           </Alert>
         )}
 
-        <Button
-          variant='contained'
-          startIcon={
-            ebdLoading ? <CircularProgress size={20} /> : <FileUpload />
-          }
-          onClick={handleImportEbd}
-          disabled={ebdLoading}
-          sx={{ textTransform: 'none', boxShadow: 'none' }}
-        >
-          {ebdLoading ? 'Importing...' : 'Import EBD'}
-        </Button>
+        {taxonomyCSVImportedAt && (
+          <Alert severity='success' sx={{ mb: 2 }}>
+            CSV imported on {new Date(taxonomyCSVImportedAt).toLocaleDateString()} at{' '}
+            {new Date(taxonomyCSVImportedAt).toLocaleTimeString()}
+          </Alert>
+        )}
+
+        <Stack direction='row' spacing={1}>
+          <Button
+            variant='contained'
+            startIcon={
+              taxonomyCSVLoading ? <CircularProgress size={20} /> : <FileUpload />
+            }
+            onClick={handleImportTaxonomyCSV}
+            disabled={taxonomyCSVLoading}
+            sx={{ textTransform: 'none', boxShadow: 'none' }}
+          >
+            {taxonomyCSVLoading
+              ? 'Importing...'
+              : taxonomyCSVImportedAt
+                ? 'Update CSV'
+                : 'Import CSV'}
+          </Button>
+        </Stack>
         <input
-          ref={ebdFileInputRef}
+          ref={taxonomyCSVFileInputRef}
           type='file'
           accept='.txt,.csv'
-          onChange={handleEbdFileSelect}
+          onChange={handleTaxonomyCSVFileSelect}
           style={{ display: 'none' }}
         />
       </Paper>

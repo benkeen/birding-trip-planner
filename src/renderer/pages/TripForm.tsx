@@ -4,9 +4,10 @@ import './TripForm.css'
 interface TripFormProps {
   onSubmit: (data: any) => void
   token: string
+  error?: string
 }
 
-export default function TripForm({ onSubmit, token }: TripFormProps) {
+export default function TripForm({ onSubmit, token, error: externalError }: TripFormProps) {
   const [name, setName] = useState('')
   const [location, setLocation] = useState('')
   const [startDate, setStartDate] = useState('')
@@ -36,7 +37,7 @@ export default function TripForm({ onSubmit, token }: TripFormProps) {
     <div className='trip-form-container'>
       <h2>Plan a New Birding Trip</h2>
 
-      {error && <div className='alert alert-error'>{error}</div>}
+      {(error || externalError) && <div className='alert alert-error'>{error || externalError}</div>}
 
       <form onSubmit={handleSubmit} className='trip-form'>
         <div className='form-row'>
