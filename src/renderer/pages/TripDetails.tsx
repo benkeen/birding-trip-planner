@@ -29,6 +29,7 @@ import {
   Link
 } from '@mui/material'
 import { ArrowBack, Refresh, Edit, CheckCircle } from '@mui/icons-material'
+import TripMap, { type MapLocation } from '../components/TripMap'
 
 interface TripDetailsProps {
   trip: Trip
@@ -471,6 +472,35 @@ export default function TripDetails({
     )
   ).size
 
+  // Aggregate observation locations across the filtered species for the map
+  const mapLocations: MapLocation[] = (() => {
+    const byKey = new Map<string, MapLocation>()
+    for (const s of filteredSpecies) {
+      for (const l of s.locations) {
+        if (typeof l.lat !== 'number' || typeof l.lng !== 'number') continue
+        if (l.lat === 0 && l.lng === 0) continue
+        const key = `${l.name}|${l.lat}|${l.lng}`
+        const existing = byKey.get(key)
+        if (existing) {
+          existing.count += l.count
+        } else {
+          byKey.set(key, {
+            name: l.name,
+            lat: l.lat,
+            lng: l.lng,
+            count: l.count
+          })
+        }
+      }
+    }
+    return Array.from(byKey.values())
+  })()
+
+  const mapFallbackCenter: [number, number] = [
+    typeof trip.latitude === 'number' ? trip.latitude : 20,
+    typeof trip.longitude === 'number' ? trip.longitude : 0
+  ]
+
   return (
     <Container
       maxWidth='lg'
@@ -764,7 +794,7 @@ export default function TripDetails({
             value={
               activeTab === 'species' ? 0 : activeTab === 'locations' ? 1 : 2
             }
-            onChange={(e, newValue) =>
+            onChange={(_e, newValue) =>
               setActiveTab(
                 newValue === 0
                   ? 'species'
@@ -942,19 +972,11 @@ export default function TripDetails({
             )}
 
             {activeTab === 'map' && (
-              <Box
-                sx={{
-                  p: 6,
-                  textAlign: 'center',
-                  color: '#94a3b8',
-                  minHeight: 400,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  backgroundColor: 'transparent'
-                }}
-              >
-                <Typography>Map view coming soon</Typography>
+              <Box sx={{ height: '100%', minHeight: 400 }}>
+                <TripMap
+                  locations={mapLocations}
+                  fallbackCenter={mapFallbackCenter}
+                />
               </Box>
             )}
           </Box>
