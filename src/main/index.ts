@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, ipcMain } from 'electron'
+import { app, BrowserWindow, Menu, ipcMain, shell } from 'electron'
 import { fileURLToPath } from 'url'
 import path from 'path'
 import { initializeDatabase, closeDatabase } from './db'
@@ -184,4 +184,12 @@ function createMenu() {
 // IPC handlers
 ipcMain.handle('get-app-path', () => {
   return app.getAppPath()
+})
+
+// Open an external URL in the user's default browser (https only)
+ipcMain.handle('open-external', (_event, url: string) => {
+  if (typeof url === 'string' && /^https:\/\//i.test(url)) {
+    return shell.openExternal(url)
+  }
+  return Promise.reject(new Error('Refused to open non-https URL'))
 })

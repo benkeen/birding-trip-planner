@@ -24,7 +24,9 @@ import {
   TextField,
   DialogActions,
   Checkbox,
-  FormControlLabel
+  FormControlLabel,
+  MenuItem,
+  Link
 } from '@mui/material'
 import { ArrowBack, Refresh, Edit, CheckCircle } from '@mui/icons-material'
 
@@ -41,7 +43,7 @@ interface SpeciesData {
   scientific_name: string
   checklistFrequency: number // 0-1 (percentage of checklists)
   totalReports: number // total observations
-  hotspots: Array<{ name: string; lat: number; lng: number }>
+  locations: Array<{ name: string; lat: number; lng: number; count: number }>
 }
 
 function formatDateRange(startDate: string, endDate: string): string {
@@ -103,7 +105,9 @@ export default function TripDetails({
   const [species, setSpecies] = useState<SpeciesData[]>([])
   const [error, setError] = useState('')
   const [hasLoaded, setHasLoaded] = useState(false)
-  const [activeTab, setActiveTab] = useState<'species' | 'map'>('species')
+  const [activeTab, setActiveTab] = useState<'species' | 'locations' | 'map'>(
+    'species'
+  )
   const [progress, setProgress] = useState<{
     current: number
     total: number
@@ -117,6 +121,8 @@ export default function TripDetails({
   const [editError, setEditError] = useState('')
   const [searchFilter, setSearchFilter] = useState('')
   const [lifersOnly, setLifersOnly] = useState(false)
+  const [timespanYears, setTimespanYears] = useState(20)
+  const [timespanLoading, setTimespanLoading] = useState(false)
   const [seenScientificNames, setSeenScientificNames] = useState<Set<string>>(
     new Set()
   )
@@ -147,7 +153,16 @@ export default function TripDetails({
           Array.isArray(data.species) &&
           data.species.length > 0
         ) {
-          setSpecies(data.species)
+          // Normalize older cached entries that predate the `locations` field
+          const normalized: SpeciesData[] = data.species.map((s: any) => ({
+            code: s.code || '',
+            common_name: s.common_name || 'Unknown',
+            scientific_name: s.scientific_name || 'Unknown',
+            checklistFrequency: s.checklistFrequency || 0,
+            totalReports: s.totalReports || 0,
+            locations: Array.isArray(s.locations) ? s.locations : []
+          }))
+          setSpecies(normalized)
           setHasLoaded(true)
         }
       } catch (err) {
@@ -339,58 +354,33 @@ export default function TripDetails({
         }
 
         if (done && species.length > 0) {
-          // Fetch hotspots for the region (optional)
-          fetch(
-            `http://localhost:3000/api/ebird/hotspots/${trip.location}?api_key=${encodeURIComponent(ebirdApiKey)}`
-          )
-            .then((hotspotsResponse) => {
-              if (hotspotsResponse.ok) {
-                return hotspotsResponse.json()
-              }
-              return []
-            })
-            .catch((hotspotsErr) => {
-              console.warn(
-                'Failed to fetch hotspots (non-blocking):',
-                hotspotsErr
-              )
-              return []
-            })
-            .then((hotspots) => {
-              // Transform species data with frequency and hotspots
-              const speciesWithData: SpeciesData[] = species.map((s: any) => ({
-                code: s.code || '',
-                common_name: s.comName || 'Unknown',
-                scientific_name: s.sciName || 'Unknown',
-                checklistFrequency: Math.round(
-                  (s.checklistFrequency || 0) * 100
-                ),
-                totalReports: s.totalReports || 0,
-                hotspots: hotspots.slice(0, 3).map((h: any) => ({
-                  name: h.locName || h.name,
-                  lat: h.lat,
-                  lng: h.lng
-                }))
-              }))
+          // Build display data using the per-species locations from observations
+          const speciesWithData: SpeciesData[] = species.map((s: any) => ({
+            code: s.code || '',
+            common_name: s.comName || 'Unknown',
+            scientific_name: s.sciName || 'Unknown',
+            checklistFrequency: Math.round((s.checklistFrequency || 0) * 100),
+            totalReports: s.totalReports || 0,
+            locations: Array.isArray(s.locations) ? s.locations : []
+          }))
 
-              setSpecies(speciesWithData)
-              setHasLoaded(true)
-              setLoading(false)
-              setProgress(null)
-              console.log(`✨ Display ready: ${speciesWithData.length} species`)
+          setSpecies(speciesWithData)
+          setHasLoaded(true)
+          setLoading(false)
+          setProgress(null)
+          console.log(`✨ Display ready: ${speciesWithData.length} species`)
 
-              // Persist so returning to this page doesn't require re-requesting
-              fetch(`http://localhost:3000/api/trips/${trip.id}/species`, {
-                method: 'PUT',
-                headers: {
-                  'Content-Type': 'application/json',
-                  Authorization: `Bearer ${token}`
-                },
-                body: JSON.stringify({ species: speciesWithData })
-              }).catch((saveErr) => {
-                console.warn('Failed to persist target species:', saveErr)
-              })
-            })
+          // Persist so returning to this page doesn't require re-requesting
+          fetch(`http://localhost:3000/api/trips/${trip.id}/species`, {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${token}`
+            },
+            body: JSON.stringify({ species: speciesWithData })
+          }).catch((saveErr) => {
+            console.warn('Failed to persist target species:', saveErr)
+          })
         }
       }, 500) // Poll every 500ms
     } catch (err) {
@@ -399,6 +389,64 @@ export default function TripDetails({
         err instanceof Error ? err.message : 'Failed to load species data'
       )
       setLoading(false)
+    }
+  }
+
+  // Open the eBird species page in the user's default browser
+  const openSpeciesPage = (code: string) => {
+    if (!code) return
+    const url = `https://ebird.org/species/${code}`
+    const electron = (window as any).electron
+    if (electron?.ipcRenderer?.invoke) {
+      electron.ipcRenderer
+        .invoke('open-external', url)
+        .catch((err: unknown) => {
+          console.error('Failed to open species page:', err)
+        })
+    } else {
+      window.open(url, '_blank', 'noopener,noreferrer')
+    }
+  }
+
+  // Re-aggregate the cached observations for a chosen number of years
+  const applyTimespan = async (years: number) => {
+    setTimespanYears(years)
+    setTimespanLoading(true)
+    try {
+      const startDateStr = trip.start_date.split('T')[0]
+      const endDateStr = trip.end_date.split('T')[0]
+      const response = await fetch(
+        `http://localhost:3000/api/ebird/aggregate/${trip.location}`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            start_date: startDateStr,
+            end_date: endDateStr,
+            years
+          })
+        }
+      )
+      if (!response.ok) {
+        throw new Error(`Failed to aggregate timespan: ${response.status}`)
+      }
+      const data = await response.json()
+      const mapped: SpeciesData[] = (data.species || []).map((s: any) => ({
+        code: s.code || '',
+        common_name: s.comName || 'Unknown',
+        scientific_name: s.sciName || 'Unknown',
+        checklistFrequency: Math.round((s.checklistFrequency || 0) * 100),
+        totalReports: s.totalReports || 0,
+        locations: Array.isArray(s.locations) ? s.locations : []
+      }))
+      setSpecies(mapped)
+    } catch (err) {
+      console.error('Failed to apply timespan:', err)
+    } finally {
+      setTimespanLoading(false)
     }
   }
 
@@ -416,6 +464,12 @@ export default function TripDetails({
       s.scientific_name.toLowerCase().includes(q)
     )
   })
+
+  const uniqueLocationCount = new Set(
+    filteredSpecies.flatMap((s) =>
+      s.locations.map((l) => `${l.name}|${l.lat}|${l.lng}`)
+    )
+  ).size
 
   return (
     <Container
@@ -640,113 +694,135 @@ export default function TripDetails({
             backgroundColor: 'transparent'
           }}
         >
+          {/* Search + filters (above the tabs) */}
+          <Box
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 2,
+              mb: 1.5,
+              flexShrink: 0
+            }}
+          >
+            <TextField
+              placeholder='Search species…'
+              value={searchFilter}
+              onChange={(e) => setSearchFilter(e.target.value)}
+              size='small'
+              fullWidth
+              sx={{
+                maxWidth: 280,
+                '& .MuiInputBase-input': {
+                  fontSize: '0.8rem',
+                  py: 0.75
+                }
+              }}
+            />
+            <TextField
+              select
+              label='Timespan'
+              value={timespanYears}
+              onChange={(e) => applyTimespan(Number(e.target.value))}
+              size='small'
+              disabled={timespanLoading}
+              sx={{
+                minWidth: 150,
+                flexShrink: 0,
+                '& .MuiInputBase-input': { fontSize: '0.8rem', py: 0.75 },
+                '& .MuiInputLabel-root': { fontSize: '0.8rem' }
+              }}
+            >
+              <MenuItem value={1}>Last 1 year</MenuItem>
+              <MenuItem value={2}>Last 2 years</MenuItem>
+              <MenuItem value={3}>Last 3 years</MenuItem>
+              <MenuItem value={5}>Last 5 years</MenuItem>
+              <MenuItem value={10}>Last 10 years</MenuItem>
+              <MenuItem value={20}>Last 20 years</MenuItem>
+            </TextField>
+            <FormControlLabel
+              control={
+                <Checkbox
+                  checked={lifersOnly}
+                  onChange={(e) => setLifersOnly(e.target.checked)}
+                  size='small'
+                  sx={{
+                    p: 0.5,
+                    '& .MuiSvgIcon-root': { fontSize: '1rem' }
+                  }}
+                />
+              }
+              label='Lifers only'
+              sx={{
+                flexShrink: 0,
+                whiteSpace: 'nowrap',
+                '& .MuiFormControlLabel-label': { fontSize: '0.75rem' }
+              }}
+            />
+          </Box>
+
           <Tabs
-            value={activeTab === 'species' ? 0 : 1}
+            value={
+              activeTab === 'species' ? 0 : activeTab === 'locations' ? 1 : 2
+            }
             onChange={(e, newValue) =>
-              setActiveTab(newValue === 0 ? 'species' : 'map')
+              setActiveTab(
+                newValue === 0
+                  ? 'species'
+                  : newValue === 1
+                    ? 'locations'
+                    : 'map'
+              )
             }
             sx={{ flexShrink: 0, backgroundColor: 'transparent' }}
           >
-            <Tab label='Observed Species' />
+            <Tab label={`Species (${filteredSpecies.length})`} />
+            <Tab label={`Locations (${uniqueLocationCount})`} />
             <Tab label='Map' />
           </Tabs>
 
           <Box sx={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
             {activeTab === 'species' && (
               <Box sx={{ p: 3, pl: 0, backgroundColor: 'transparent' }}>
-                <Box
-                  sx={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 2,
-                    mb: 2
-                  }}
-                >
-                  <TextField
-                    placeholder='Search species…'
-                    value={searchFilter}
-                    onChange={(e) => setSearchFilter(e.target.value)}
-                    size='small'
-                    fullWidth
-                    sx={{
-                      maxWidth: 280,
-                      '& .MuiInputBase-input': {
-                        fontSize: '0.8rem',
-                        py: 0.75
-                      }
-                    }}
-                  />
-                  <FormControlLabel
-                    control={
-                      <Checkbox
-                        checked={lifersOnly}
-                        onChange={(e) => setLifersOnly(e.target.checked)}
-                        size='small'
-                        sx={{ p: 0.5, '& .MuiSvgIcon-root': { fontSize: '1rem' } }}
-                      />
-                    }
-                    label='Lifers only'
-                    sx={{
-                      flexShrink: 0,
-                      whiteSpace: 'nowrap',
-                      '& .MuiFormControlLabel-label': { fontSize: '0.75rem' }
-                    }}
-                  />
-                  <Typography
-                    variant='body2'
-                    sx={{
-                      ml: 'auto',
-                      flexShrink: 0,
-                      color: '#2563eb',
-                      fontWeight: 600,
-                      fontSize: '0.75rem',
-                      whiteSpace: 'nowrap'
-                    }}
-                  >
-                    {filteredSpecies.length} species
-                  </Typography>
-                </Box>
-
-              <Table sx={{ mt: 2, backgroundColor: 'transparent' }}>
-                <TableHead>
-                  <TableRow>
-                    <TableCell sx={{ fontWeight: 600, fontSize: '0.875rem' }}>
-                      Species
-                    </TableCell>
-                    <TableCell
-                      sx={{
-                        fontWeight: 600,
-                        fontSize: '0.875rem',
-                        textAlign: 'center'
-                      }}
-                    >
-                      Seen
-                    </TableCell>
-                    <TableCell
-                      sx={{
-                        fontWeight: 600,
-                        fontSize: '0.875rem',
-                        textAlign: 'center'
-                      }}
-                    >
-                      Checklist Frequency
-                    </TableCell>
-                    <TableCell
-                      sx={{
-                        fontWeight: 600,
-                        fontSize: '0.875rem',
-                        textAlign: 'center'
-                      }}
-                    >
-                      Total Reports
-                    </TableCell>
-                    <TableCell sx={{ fontWeight: 600, fontSize: '0.875rem' }}>
-                      Best Hotspots
-                    </TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {filteredSpecies.map((s) => {
+                <Table sx={{ mt: 2, backgroundColor: 'transparent' }}>
+                  <TableHead>
+                    <TableRow>
+                      <TableCell sx={{ fontWeight: 600, fontSize: '0.875rem' }}>
+                        Species
+                      </TableCell>
+                      <TableCell
+                        sx={{
+                          fontWeight: 600,
+                          fontSize: '0.875rem',
+                          textAlign: 'center'
+                        }}
+                      >
+                        Seen
+                      </TableCell>
+                      <TableCell
+                        sx={{
+                          fontWeight: 600,
+                          fontSize: '0.875rem',
+                          textAlign: 'center'
+                        }}
+                      >
+                        Checklist Frequency
+                      </TableCell>
+                      <TableCell
+                        sx={{
+                          fontWeight: 600,
+                          fontSize: '0.875rem',
+                          textAlign: 'center'
+                        }}
+                      >
+                        Total Reports
+                      </TableCell>
+                      <TableCell sx={{ fontWeight: 600, fontSize: '0.875rem' }}>
+                        Locations
+                      </TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {filteredSpecies.map((s) => {
                       const seen = seenScientificNames.has(
                         s.scientific_name.trim().toLowerCase()
                       )
@@ -759,12 +835,22 @@ export default function TripDetails({
                           }}
                         >
                           <TableCell>
-                            <Typography
-                              variant='body2'
-                              sx={{ fontWeight: 500 }}
+                            <Link
+                              component='button'
+                              type='button'
+                              onClick={() => openSpeciesPage(s.code)}
+                              underline='hover'
+                              sx={{
+                                display: 'block',
+                                textAlign: 'left',
+                                fontSize: '0.875rem',
+                                fontWeight: 500,
+                                color: '#2563eb',
+                                cursor: 'pointer'
+                              }}
                             >
                               {s.common_name}
-                            </Typography>
+                            </Link>
                             <Typography
                               variant='caption'
                               sx={{ color: '#64748b', fontStyle: 'italic' }}
@@ -807,22 +893,29 @@ export default function TripDetails({
                             {s.totalReports}
                           </TableCell>
                           <TableCell sx={{ fontSize: '0.875rem' }}>
-                            {s.hotspots.length > 0 ? (
-                              <Stack spacing={0.5}>
-                                {s.hotspots.map((hs, idx: number) => (
+                            {s.locations && s.locations.length > 0 ? (
+                              <Stack
+                                spacing={0.5}
+                                sx={{
+                                  maxHeight: 160,
+                                  overflowY: 'auto',
+                                  pr: 1
+                                }}
+                              >
+                                {s.locations.map((loc, idx: number) => (
                                   <Box key={idx}>
                                     <Typography
                                       variant='body2'
                                       sx={{ fontWeight: 500 }}
                                     >
-                                      {hs.name}
-                                    </Typography>
-                                    <Typography
-                                      variant='caption'
-                                      sx={{ color: '#94a3b8' }}
-                                    >
-                                      ({hs.lat.toFixed(2)}°, {hs.lng.toFixed(2)}
-                                      °)
+                                      {loc.name}{' '}
+                                      <Typography
+                                        component='span'
+                                        variant='caption'
+                                        sx={{ color: '#64748b' }}
+                                      >
+                                        ({loc.count})
+                                      </Typography>
                                     </Typography>
                                   </Box>
                                 ))}
@@ -832,34 +925,38 @@ export default function TripDetails({
                                 variant='body2'
                                 sx={{ color: '#94a3b8' }}
                               >
-                                No hotspots available
+                                No locations available
                               </Typography>
                             )}
                           </TableCell>
                         </TableRow>
                       )
                     })}
-                </TableBody>
-              </Table>
-            </Box>
-          )}
+                  </TableBody>
+                </Table>
+              </Box>
+            )}
 
-          {activeTab === 'map' && (
-            <Box
-              sx={{
-                p: 6,
-                textAlign: 'center',
-                color: '#94a3b8',
-                minHeight: 400,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                backgroundColor: 'transparent'
-              }}
-            >
-              <Typography>Map view coming soon</Typography>
-            </Box>
-          )}
+            {activeTab === 'locations' && (
+              <Box sx={{ p: 3, pl: 0, backgroundColor: 'transparent' }} />
+            )}
+
+            {activeTab === 'map' && (
+              <Box
+                sx={{
+                  p: 6,
+                  textAlign: 'center',
+                  color: '#94a3b8',
+                  minHeight: 400,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  backgroundColor: 'transparent'
+                }}
+              >
+                <Typography>Map view coming soon</Typography>
+              </Box>
+            )}
           </Box>
         </Box>
       )}

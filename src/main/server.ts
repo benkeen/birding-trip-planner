@@ -27,7 +27,7 @@ export function createExpressApp(): express.Application {
   const app = express()
 
   app.use(cors())
-  app.use(bodyParser.json())
+  app.use(bodyParser.json({ limit: '50mb' }))
 
   // Local auth middleware - sets default user for local app without auth
   const authMiddleware = (req: Request, res: Response, next: NextFunction) => {
@@ -58,6 +58,12 @@ export function createExpressApp(): express.Application {
       sciName: string
       checklistFrequency: number
       totalReports: number
+      locations: Array<{
+        name: string
+        lat: number
+        lng: number
+        count: number
+      }>
     }>
     error?: string
     done: boolean
@@ -179,6 +185,10 @@ export function createExpressApp(): express.Application {
             string,
             { comName: string; sciName: string }
           > = {}
+          const speciesLocations: Record<
+            string,
+            Map<string, { name: string; lat: number; lng: number; count: number }>
+          > = {}
           const allChecklists = new Set<string>()
           let totalObs = 0
 
@@ -201,6 +211,25 @@ export function createExpressApp(): express.Application {
                 speciesMetadata[code] = {
                   comName: obs.comName || code,
                   sciName: obs.sciName || 'Unknown'
+                }
+              }
+
+              // Track every location this species has been observed at
+              if (obs.locId) {
+                if (!speciesLocations[code]) {
+                  speciesLocations[code] = new Map()
+                }
+                const locMap = speciesLocations[code]
+                const existing = locMap.get(obs.locId)
+                if (existing) {
+                  existing.count++
+                } else {
+                  locMap.set(obs.locId, {
+                    name: obs.locName || obs.locId,
+                    lat: obs.lat,
+                    lng: obs.lng,
+                    count: 1
+                  })
                 }
               }
             }
@@ -283,7 +312,12 @@ export function createExpressApp(): express.Application {
                 totalChecklists > 0
                   ? speciesChecklistMap[code].size / totalChecklists
                   : 0,
-              totalReports: count
+              totalReports: count,
+              locations: speciesLocations[code]
+                ? Array.from(speciesLocations[code].values()).sort(
+                    (a, b) => b.count - a.count
+                  )
+                : []
             }))
             .sort((a, b) => b.checklistFrequency - a.checklistFrequency)
 
@@ -362,6 +396,131 @@ export function createExpressApp(): express.Application {
         total: state.total,
         estimatedSeconds
       })
+    }
+  )
+
+  // Re-aggregate already-cached observations for a specific timespan (in years).
+  // Reads only from the on-disk cache — no eBird API calls — so it's fast and
+  // works entirely offline once a full historic load has been done.
+  app.post(
+    '/api/ebird/aggregate/:region',
+    (req: Request, res: Response) => {
+      const { region } = req.params
+      const { start_date, end_date, years } = req.body as {
+        start_date: string
+        end_date: string
+        years: number
+      }
+
+      if (!start_date || !end_date || !years) {
+        return res
+          .status(400)
+          .json({ error: 'start_date, end_date, and years required' })
+      }
+
+      const parseDate = (dateStr: string) => {
+        const [year, month, day] = dateStr.split('-').map(Number)
+        return new Date(year, month - 1, day)
+      }
+
+      const startDateObj = parseDate(start_date)
+      const endDateObj = parseDate(end_date)
+
+      if (isNaN(startDateObj.getTime()) || isNaN(endDateObj.getTime())) {
+        return res.status(400).json({ error: 'Invalid date format' })
+      }
+
+      const currentYear = new Date().getFullYear()
+      const yearsBackMax = Math.max(1, Math.floor(years))
+
+      // Build the list of (year, month, day) tuples to read from cache
+      const datesToRead: Array<{ year: number; month: number; day: number }> = []
+      const cursor = new Date(startDateObj)
+      while (cursor <= endDateObj) {
+        const month = cursor.getMonth() + 1
+        const day = cursor.getDate()
+        for (let yearsBack = 1; yearsBack <= yearsBackMax; yearsBack++) {
+          datesToRead.push({ year: currentYear - yearsBack, month, day })
+        }
+        cursor.setDate(cursor.getDate() + 1)
+      }
+
+      const speciesChecklistMap: Record<string, Set<string>> = {}
+      const speciesObsCount: Record<string, number> = {}
+      const speciesMetadata: Record<
+        string,
+        { comName: string; sciName: string }
+      > = {}
+      const speciesLocations: Record<
+        string,
+        Map<string, { name: string; lat: number; lng: number; count: number }>
+      > = {}
+      const allChecklists = new Set<string>()
+
+      for (const { year, month, day } of datesToRead) {
+        const data = cache.get(region, year, month, day)
+        if (!data) continue
+
+        for (const obs of data) {
+          const code = obs.speciesCode
+          const checklistId = `${obs.locId}_${obs.obsDt}`
+
+          allChecklists.add(checklistId)
+
+          if (!speciesChecklistMap[code]) {
+            speciesChecklistMap[code] = new Set()
+          }
+          speciesChecklistMap[code].add(checklistId)
+
+          speciesObsCount[code] = (speciesObsCount[code] || 0) + 1
+
+          if (!speciesMetadata[code]) {
+            speciesMetadata[code] = {
+              comName: obs.comName || code,
+              sciName: obs.sciName || 'Unknown'
+            }
+          }
+
+          if (obs.locId) {
+            if (!speciesLocations[code]) {
+              speciesLocations[code] = new Map()
+            }
+            const locMap = speciesLocations[code]
+            const existing = locMap.get(obs.locId)
+            if (existing) {
+              existing.count++
+            } else {
+              locMap.set(obs.locId, {
+                name: obs.locName || obs.locId,
+                lat: obs.lat,
+                lng: obs.lng,
+                count: 1
+              })
+            }
+          }
+        }
+      }
+
+      const totalChecklists = allChecklists.size
+      const species = Object.entries(speciesObsCount)
+        .map(([code, count]) => ({
+          code,
+          comName: speciesMetadata[code]?.comName || code,
+          sciName: speciesMetadata[code]?.sciName || 'Unknown',
+          checklistFrequency:
+            totalChecklists > 0
+              ? speciesChecklistMap[code].size / totalChecklists
+              : 0,
+          totalReports: count,
+          locations: speciesLocations[code]
+            ? Array.from(speciesLocations[code].values()).sort(
+                (a, b) => b.count - a.count
+              )
+            : []
+        }))
+        .sort((a, b) => b.checklistFrequency - a.checklistFrequency)
+
+      res.json({ species })
     }
   )
 
