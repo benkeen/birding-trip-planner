@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import type { Trip } from '@shared/types'
 import {
   Box,
@@ -12,11 +12,9 @@ import {
   TableRow,
   TableCell,
   Alert,
-  CircularProgress,
   LinearProgress,
   Container,
   Chip,
-  Stack,
   Dialog,
   DialogContent,
   DialogTitle,
@@ -26,7 +24,8 @@ import {
   Checkbox,
   FormControlLabel,
   MenuItem,
-  Link
+  Link,
+  Tooltip
 } from '@mui/material'
 import { ArrowBack, Refresh, Edit, CheckCircle } from '@mui/icons-material'
 import TripMap, { type MapLocation } from '../components/TripMap'
@@ -106,6 +105,7 @@ export default function TripDetails({
   const [species, setSpecies] = useState<SpeciesData[]>([])
   const [error, setError] = useState('')
   const [hasLoaded, setHasLoaded] = useState(false)
+  const [checkingCache, setCheckingCache] = useState(true)
   const [activeTab, setActiveTab] = useState<'species' | 'locations' | 'map'>(
     'species'
   )
@@ -121,12 +121,26 @@ export default function TripDetails({
   const [editSaving, setEditSaving] = useState(false)
   const [editError, setEditError] = useState('')
   const [searchFilter, setSearchFilter] = useState('')
-  const [lifersOnly, setLifersOnly] = useState(false)
-  const [timespanYears, setTimespanYears] = useState(20)
+  const [lifersOnly, setLifersOnly] = useState<boolean>(
+    () => localStorage.getItem(`trip-${trip.id}-lifersOnly`) === 'true'
+  )
+  const [timespanYears, setTimespanYears] = useState<number>(() => {
+    const stored = localStorage.getItem(`trip-${trip.id}-timespan`)
+    const parsed = stored ? parseInt(stored, 10) : 20
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 20
+  })
   const [timespanLoading, setTimespanLoading] = useState(false)
   const [seenScientificNames, setSeenScientificNames] = useState<Set<string>>(
     new Set()
   )
+
+  // Persist per-trip view preferences across app restarts
+  useEffect(() => {
+    localStorage.setItem(`trip-${trip.id}-lifersOnly`, String(lifersOnly))
+  }, [trip.id, lifersOnly])
+  useEffect(() => {
+    localStorage.setItem(`trip-${trip.id}-timespan`, String(timespanYears))
+  }, [trip.id, timespanYears])
 
   // Initialize edit form with trip data
   useEffect(() => {
@@ -168,6 +182,8 @@ export default function TripDetails({
         }
       } catch (err) {
         console.warn('Failed to load cached target species:', err)
+      } finally {
+        if (!cancelled) setCheckingCache(false)
       }
     }
 
@@ -451,6 +467,17 @@ export default function TripDetails({
     }
   }
 
+  // Re-aggregate once on load if a non-default timespan was restored
+  const restoredTimespan = useRef(false)
+  useEffect(() => {
+    if (checkingCache || !hasLoaded || restoredTimespan.current) return
+    restoredTimespan.current = true
+    if (timespanYears !== 20) {
+      applyTimespan(timespanYears)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [checkingCache, hasLoaded])
+
   const filteredSpecies = species.filter((s) => {
     if (
       lifersOnly &&
@@ -501,6 +528,52 @@ export default function TripDetails({
     typeof trip.longitude === 'number' ? trip.longitude : 0
   ]
 
+  // Group species by location for the Locations tab
+  const locationRows = (() => {
+    const byKey = new Map<
+      string,
+      {
+        name: string
+        lat: number
+        lng: number
+        totalCount: number
+        species: Array<{
+          code: string
+          common_name: string
+          scientific_name: string
+          count: number
+        }>
+      }
+    >()
+    for (const s of filteredSpecies) {
+      for (const l of s.locations) {
+        const key = `${l.name}|${l.lat}|${l.lng}`
+        let entry = byKey.get(key)
+        if (!entry) {
+          entry = {
+            name: l.name,
+            lat: l.lat,
+            lng: l.lng,
+            totalCount: 0,
+            species: []
+          }
+          byKey.set(key, entry)
+        }
+        entry.totalCount += l.count
+        entry.species.push({
+          code: s.code,
+          common_name: s.common_name,
+          scientific_name: s.scientific_name,
+          count: l.count
+        })
+      }
+    }
+    const rows = Array.from(byKey.values())
+    rows.forEach((r) => r.species.sort((a, b) => b.count - a.count))
+    rows.sort((a, b) => b.species.length - a.species.length)
+    return rows
+  })()
+
   return (
     <Container
       maxWidth='lg'
@@ -517,21 +590,27 @@ export default function TripDetails({
         sx={{
           mb: 3,
           flexShrink: 0,
+          position: 'relative',
           display: 'flex',
           justifyContent: 'space-between',
           alignItems: 'baseline',
           gap: 2
         }}
       >
+        <IconButton
+          size='small'
+          onClick={onBack}
+          title='Back to Trips'
+          sx={{
+            position: 'absolute',
+            left: -8,
+            top: 6,
+            transform: 'translateX(-100%)'
+          }}
+        >
+          <ArrowBack sx={{ fontSize: '1.25rem' }} />
+        </IconButton>
         <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1 }}>
-          <IconButton
-            size='small'
-            onClick={onBack}
-            sx={{ mr: 0.5 }}
-            title='Back to Trips'
-          >
-            <ArrowBack sx={{ fontSize: '1.25rem' }} />
-          </IconButton>
           <Typography variant='h4' sx={{ fontWeight: 600 }}>
             {trip.name}
           </Typography>
@@ -638,8 +717,15 @@ export default function TripDetails({
         </DialogActions>
       </Dialog>
 
+      {/* Initial cache check — show a spinner until we know if data exists */}
+      {checkingCache && (
+        <Box sx={{ display: 'flex', justifyContent: 'center', py: 8 }}>
+          <span className='page-spinner' />
+        </Box>
+      )}
+
       {/* Load Button */}
-      {!hasLoaded && (
+      {!checkingCache && !hasLoaded && (
         <Box sx={{ mb: 3 }}>
           <Button
             size='medium'
@@ -708,7 +794,7 @@ export default function TripDetails({
       {/* Loading State (for other loading scenarios) */}
       {loading && progress === null && (
         <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
-          <CircularProgress />
+          <span className='page-spinner' />
         </Box>
       )}
 
@@ -924,32 +1010,73 @@ export default function TripDetails({
                           </TableCell>
                           <TableCell sx={{ fontSize: '0.875rem' }}>
                             {s.locations && s.locations.length > 0 ? (
-                              <Stack
-                                spacing={0.5}
-                                sx={{
-                                  maxHeight: 160,
-                                  overflowY: 'auto',
-                                  pr: 1
+                              <Tooltip
+                                arrow
+                                placement='left'
+                                slotProps={{
+                                  tooltip: {
+                                    sx: {
+                                      bgcolor: '#ffffff',
+                                      color: '#1e293b',
+                                      border: '1px solid #e2e8f0',
+                                      borderRadius: 1.5,
+                                      boxShadow: '0 4px 16px rgba(0,0,0,0.12)',
+                                      p: 1.25,
+                                      maxWidth: 320
+                                    }
+                                  },
+                                  arrow: { sx: { color: '#ffffff' } }
                                 }}
-                              >
-                                {s.locations.map((loc, idx: number) => (
-                                  <Box key={idx}>
-                                    <Typography
-                                      variant='body2'
-                                      sx={{ fontWeight: 500 }}
-                                    >
-                                      {loc.name}{' '}
-                                      <Typography
-                                        component='span'
-                                        variant='caption'
-                                        sx={{ color: '#64748b' }}
+                                title={
+                                  <Box
+                                    sx={{
+                                      maxHeight: 300,
+                                      overflowY: 'auto'
+                                    }}
+                                  >
+                                    {s.locations.map((loc, idx: number) => (
+                                      <Box
+                                        key={idx}
+                                        sx={{
+                                          display: 'flex',
+                                          justifyContent: 'space-between',
+                                          gap: 2,
+                                          py: 0.25
+                                        }}
                                       >
-                                        ({loc.count})
-                                      </Typography>
-                                    </Typography>
+                                        <Typography
+                                          variant='caption'
+                                          sx={{ color: '#1e293b' }}
+                                        >
+                                          {loc.name}
+                                        </Typography>
+                                        <Typography
+                                          variant='caption'
+                                          sx={{
+                                            color: '#64748b',
+                                            fontWeight: 600,
+                                            flexShrink: 0
+                                          }}
+                                        >
+                                          {loc.count}
+                                        </Typography>
+                                      </Box>
+                                    ))}
                                   </Box>
-                                ))}
-                              </Stack>
+                                }
+                              >
+                                <Typography
+                                  variant='body2'
+                                  sx={{
+                                    cursor: 'default',
+                                    textDecoration: 'underline',
+                                    textDecorationStyle: 'dotted'
+                                  }}
+                                >
+                                  {s.locations.length} location
+                                  {s.locations.length === 1 ? '' : 's'}
+                                </Typography>
+                              </Tooltip>
                             ) : (
                               <Typography
                                 variant='body2'
@@ -968,7 +1095,113 @@ export default function TripDetails({
             )}
 
             {activeTab === 'locations' && (
-              <Box sx={{ p: 3, pl: 0, backgroundColor: 'transparent' }} />
+              <Box sx={{ p: 3, pl: 0, backgroundColor: 'transparent' }}>
+                <Table sx={{ mt: 2, backgroundColor: 'transparent' }}>
+                  <TableHead>
+                    <TableRow>
+                      <TableCell sx={{ fontWeight: 600, fontSize: '0.875rem' }}>
+                        Location
+                      </TableCell>
+                      <TableCell
+                        sx={{
+                          fontWeight: 600,
+                          fontSize: '0.875rem',
+                          textAlign: 'center'
+                        }}
+                      >
+                        Total Observations
+                      </TableCell>
+                      <TableCell sx={{ fontWeight: 600, fontSize: '0.875rem' }}>
+                        Species
+                      </TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {locationRows.map((loc, idx) => (
+                      <TableRow
+                        key={`${loc.name}-${loc.lat}-${loc.lng}-${idx}`}
+                        sx={{
+                          '&:hover': { backgroundColor: '#f9fafb' },
+                          '&:last-child td, &:last-child th': { border: 0 }
+                        }}
+                      >
+                        <TableCell sx={{ fontWeight: 500 }}>
+                          {loc.name}
+                        </TableCell>
+                        <TableCell
+                          sx={{ textAlign: 'center', fontSize: '0.875rem' }}
+                        >
+                          {loc.totalCount}
+                        </TableCell>
+                        <TableCell sx={{ fontSize: '0.875rem' }}>
+                          <Tooltip
+                            arrow
+                            placement='left'
+                            slotProps={{
+                              tooltip: {
+                                sx: {
+                                  bgcolor: '#ffffff',
+                                  color: '#1e293b',
+                                  border: '1px solid #e2e8f0',
+                                  borderRadius: 1.5,
+                                  boxShadow: '0 4px 16px rgba(0,0,0,0.12)',
+                                  p: 1.25,
+                                  maxWidth: 320
+                                }
+                              },
+                              arrow: { sx: { color: '#ffffff' } }
+                            }}
+                            title={
+                              <Box sx={{ maxHeight: 300, overflowY: 'auto' }}>
+                                {loc.species.map((sp, i) => (
+                                  <Box
+                                    key={i}
+                                    sx={{
+                                      display: 'flex',
+                                      justifyContent: 'space-between',
+                                      gap: 2,
+                                      py: 0.25
+                                    }}
+                                  >
+                                    <Typography
+                                      variant='caption'
+                                      sx={{ color: '#1e293b' }}
+                                    >
+                                      {sp.common_name}
+                                    </Typography>
+                                    <Typography
+                                      variant='caption'
+                                      sx={{
+                                        color: '#64748b',
+                                        fontWeight: 600,
+                                        flexShrink: 0
+                                      }}
+                                    >
+                                      {sp.count}
+                                    </Typography>
+                                  </Box>
+                                ))}
+                              </Box>
+                            }
+                          >
+                            <Typography
+                              variant='body2'
+                              sx={{
+                                cursor: 'default',
+                                textDecoration: 'underline',
+                                textDecorationStyle: 'dotted',
+                                display: 'inline-block'
+                              }}
+                            >
+                              {loc.species.length} species
+                            </Typography>
+                          </Tooltip>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </Box>
             )}
 
             {activeTab === 'map' && (
