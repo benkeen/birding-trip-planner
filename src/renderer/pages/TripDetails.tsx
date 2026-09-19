@@ -22,9 +22,11 @@ import {
   DialogTitle,
   IconButton,
   TextField,
-  DialogActions
+  DialogActions,
+  Checkbox,
+  FormControlLabel
 } from '@mui/material'
-import { ArrowBack, Refresh, Edit } from '@mui/icons-material'
+import { ArrowBack, Refresh, Edit, CheckCircle } from '@mui/icons-material'
 
 interface TripDetailsProps {
   trip: Trip
@@ -113,6 +115,11 @@ export default function TripDetails({
   const [editEndDate, setEditEndDate] = useState('')
   const [editSaving, setEditSaving] = useState(false)
   const [editError, setEditError] = useState('')
+  const [searchFilter, setSearchFilter] = useState('')
+  const [lifersOnly, setLifersOnly] = useState(false)
+  const [seenScientificNames, setSeenScientificNames] = useState<Set<string>>(
+    new Set()
+  )
 
   // Initialize edit form with trip data
   useEffect(() => {
@@ -120,6 +127,74 @@ export default function TripDetails({
     setEditStartDate(trip.start_date.split('T')[0])
     setEditEndDate(trip.end_date.split('T')[0])
   }, [trip.id, trip.name, trip.start_date, trip.end_date])
+
+  // Load any previously persisted target species so returning to this page
+  // doesn't require re-requesting the data
+  useEffect(() => {
+    let cancelled = false
+
+    const loadCachedSpecies = async () => {
+      try {
+        const response = await fetch(
+          `http://localhost:3000/api/trips/${trip.id}/species`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        )
+        if (!response.ok) return
+
+        const data = await response.json()
+        if (
+          !cancelled &&
+          Array.isArray(data.species) &&
+          data.species.length > 0
+        ) {
+          setSpecies(data.species)
+          setHasLoaded(true)
+        }
+      } catch (err) {
+        console.warn('Failed to load cached target species:', err)
+      }
+    }
+
+    loadCachedSpecies()
+
+    return () => {
+      cancelled = true
+    }
+  }, [trip.id, token])
+
+  // Load the user's life list to cross-reference which species have been seen
+  useEffect(() => {
+    let cancelled = false
+
+    const loadLifeList = async () => {
+      try {
+        const response = await fetch('http://localhost:3000/api/life-list', {
+          headers: { Authorization: `Bearer ${token}` }
+        })
+        if (!response.ok) return
+
+        const data = await response.json()
+        if (!cancelled && Array.isArray(data.species)) {
+          const seen = new Set<string>(
+            data.species
+              .map((s: { scientific_name?: string }) =>
+                (s.scientific_name || '').trim().toLowerCase()
+              )
+              .filter((name: string) => name.length > 0)
+          )
+          setSeenScientificNames(seen)
+        }
+      } catch (err) {
+        console.warn('Failed to load life list for cross-reference:', err)
+      }
+    }
+
+    loadLifeList()
+
+    return () => {
+      cancelled = true
+    }
+  }, [token])
 
   const handleSaveTrip = async () => {
     setEditError('')
@@ -303,6 +378,18 @@ export default function TripDetails({
               setLoading(false)
               setProgress(null)
               console.log(`✨ Display ready: ${speciesWithData.length} species`)
+
+              // Persist so returning to this page doesn't require re-requesting
+              fetch(`http://localhost:3000/api/trips/${trip.id}/species`, {
+                method: 'PUT',
+                headers: {
+                  'Content-Type': 'application/json',
+                  Authorization: `Bearer ${token}`
+                },
+                body: JSON.stringify({ species: speciesWithData })
+              }).catch((saveErr) => {
+                console.warn('Failed to persist target species:', saveErr)
+              })
             })
         }
       }, 500) // Poll every 500ms
@@ -315,26 +402,37 @@ export default function TripDetails({
     }
   }
 
-  return (
-    <Container maxWidth='lg' sx={{ py: 3 }}>
-      {/* Back Button */}
-      <Button
-        startIcon={<ArrowBack />}
-        onClick={onBack}
-        sx={{
-          mb: 3,
-          textTransform: 'none',
-          fontSize: '0.9375rem',
-          boxShadow: 'none'
-        }}
-      >
-        Back to Trips
-      </Button>
+  const filteredSpecies = species.filter((s) => {
+    if (
+      lifersOnly &&
+      seenScientificNames.has(s.scientific_name.trim().toLowerCase())
+    ) {
+      return false
+    }
+    const q = searchFilter.trim().toLowerCase()
+    if (!q) return true
+    return (
+      s.common_name.toLowerCase().includes(q) ||
+      s.scientific_name.toLowerCase().includes(q)
+    )
+  })
 
+  return (
+    <Container
+      maxWidth='lg'
+      sx={{
+        py: 3,
+        height: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        minHeight: 0
+      }}
+    >
       {/* Trip Header */}
       <Box
         sx={{
           mb: 3,
+          flexShrink: 0,
           display: 'flex',
           justifyContent: 'space-between',
           alignItems: 'baseline',
@@ -342,6 +440,14 @@ export default function TripDetails({
         }}
       >
         <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1 }}>
+          <IconButton
+            size='small'
+            onClick={onBack}
+            sx={{ mr: 0.5 }}
+            title='Back to Trips'
+          >
+            <ArrowBack sx={{ fontSize: '1.25rem' }} />
+          </IconButton>
           <Typography variant='h4' sx={{ fontWeight: 600 }}>
             {trip.name}
           </Typography>
@@ -524,33 +630,97 @@ export default function TripDetails({
 
       {/* Species Data with Tabs */}
       {hasLoaded && species.length > 0 && (
-        <Box sx={{ mt: 3, backgroundColor: 'transparent' }}>
+        <Box
+          sx={{
+            mt: 0.5,
+            flex: 1,
+            minHeight: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            backgroundColor: 'transparent'
+          }}
+        >
           <Tabs
             value={activeTab === 'species' ? 0 : 1}
             onChange={(e, newValue) =>
               setActiveTab(newValue === 0 ? 'species' : 'map')
             }
-            sx={{ backgroundColor: 'transparent' }}
+            sx={{ flexShrink: 0, backgroundColor: 'transparent' }}
           >
-            <Tab label={`Target Species (${species.length})`} />
+            <Tab label='Observed Species' />
             <Tab label='Map' />
           </Tabs>
 
-          {activeTab === 'species' && (
-            <Box sx={{ p: 3, backgroundColor: 'transparent' }}>
-              <Typography variant='body2' sx={{ color: '#64748b', mb: 2 }}>
-                These are species likely to be found in {trip.location} during
-                your trip dates.
-              </Typography>
+          <Box sx={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+            {activeTab === 'species' && (
+              <Box sx={{ p: 3, pl: 0, backgroundColor: 'transparent' }}>
+                <Box
+                  sx={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 2,
+                    mb: 2
+                  }}
+                >
+                  <TextField
+                    placeholder='Search species…'
+                    value={searchFilter}
+                    onChange={(e) => setSearchFilter(e.target.value)}
+                    size='small'
+                    fullWidth
+                    sx={{
+                      maxWidth: 280,
+                      '& .MuiInputBase-input': {
+                        fontSize: '0.8rem',
+                        py: 0.75
+                      }
+                    }}
+                  />
+                  <FormControlLabel
+                    control={
+                      <Checkbox
+                        checked={lifersOnly}
+                        onChange={(e) => setLifersOnly(e.target.checked)}
+                        size='small'
+                        sx={{ p: 0.5, '& .MuiSvgIcon-root': { fontSize: '1rem' } }}
+                      />
+                    }
+                    label='Lifers only'
+                    sx={{
+                      flexShrink: 0,
+                      whiteSpace: 'nowrap',
+                      '& .MuiFormControlLabel-label': { fontSize: '0.75rem' }
+                    }}
+                  />
+                  <Typography
+                    variant='body2'
+                    sx={{
+                      ml: 'auto',
+                      flexShrink: 0,
+                      color: '#2563eb',
+                      fontWeight: 600,
+                      fontSize: '0.75rem',
+                      whiteSpace: 'nowrap'
+                    }}
+                  >
+                    {filteredSpecies.length} species
+                  </Typography>
+                </Box>
 
               <Table sx={{ mt: 2, backgroundColor: 'transparent' }}>
                 <TableHead>
                   <TableRow>
                     <TableCell sx={{ fontWeight: 600, fontSize: '0.875rem' }}>
-                      Common Name
+                      Species
                     </TableCell>
-                    <TableCell sx={{ fontWeight: 600, fontSize: '0.875rem' }}>
-                      Scientific Name
+                    <TableCell
+                      sx={{
+                        fontWeight: 600,
+                        fontSize: '0.875rem',
+                        textAlign: 'center'
+                      }}
+                    >
+                      Seen
                     </TableCell>
                     <TableCell
                       sx={{
@@ -576,73 +746,99 @@ export default function TripDetails({
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {species.map((s) => (
-                    <TableRow
-                      key={s.code}
-                      sx={{
-                        '&:hover': { backgroundColor: '#f9fafb' },
-                        '&:last-child td, &:last-child th': { border: 0 }
-                      }}
-                    >
-                      <TableCell sx={{ fontWeight: 500 }}>
-                        {s.common_name}
-                      </TableCell>
-                      <TableCell
-                        sx={{
-                          color: '#64748b',
-                          fontStyle: 'italic',
-                          fontSize: '0.875rem'
-                        }}
-                      >
-                        {s.scientific_name}
-                      </TableCell>
-                      <TableCell sx={{ textAlign: 'center' }}>
-                        <Chip
-                          label={`${s.checklistFrequency}%`}
-                          variant='outlined'
-                          size='small'
+                  {filteredSpecies.map((s) => {
+                      const seen = seenScientificNames.has(
+                        s.scientific_name.trim().toLowerCase()
+                      )
+                      return (
+                        <TableRow
+                          key={s.code}
                           sx={{
-                            backgroundColor: '#e2e8f0',
-                            color: '#475569',
-                            border: 'none',
-                            fontWeight: 500,
-                            fontSize: '0.75rem'
+                            '&:hover': { backgroundColor: '#f9fafb' },
+                            '&:last-child td, &:last-child th': { border: 0 }
                           }}
-                        />
-                      </TableCell>
-                      <TableCell
-                        sx={{ textAlign: 'center', fontSize: '0.875rem' }}
-                      >
-                        {s.totalReports}
-                      </TableCell>
-                      <TableCell sx={{ fontSize: '0.875rem' }}>
-                        {s.hotspots.length > 0 ? (
-                          <Stack spacing={0.5}>
-                            {s.hotspots.map((hs, idx: number) => (
-                              <Box key={idx}>
-                                <Typography
-                                  variant='body2'
-                                  sx={{ fontWeight: 500 }}
-                                >
-                                  {hs.name}
-                                </Typography>
-                                <Typography
-                                  variant='caption'
-                                  sx={{ color: '#94a3b8' }}
-                                >
-                                  ({hs.lat.toFixed(2)}°, {hs.lng.toFixed(2)}°)
-                                </Typography>
-                              </Box>
-                            ))}
-                          </Stack>
-                        ) : (
-                          <Typography variant='body2' sx={{ color: '#94a3b8' }}>
-                            No hotspots available
-                          </Typography>
-                        )}
-                      </TableCell>
-                    </TableRow>
-                  ))}
+                        >
+                          <TableCell>
+                            <Typography
+                              variant='body2'
+                              sx={{ fontWeight: 500 }}
+                            >
+                              {s.common_name}
+                            </Typography>
+                            <Typography
+                              variant='caption'
+                              sx={{ color: '#64748b', fontStyle: 'italic' }}
+                            >
+                              {s.scientific_name}
+                            </Typography>
+                          </TableCell>
+                          <TableCell sx={{ textAlign: 'center' }}>
+                            {seen ? (
+                              <CheckCircle
+                                sx={{ color: '#16a34a', fontSize: '1.25rem' }}
+                                titleAccess='Seen'
+                              />
+                            ) : (
+                              <Typography
+                                variant='body2'
+                                sx={{ color: '#cbd5e1' }}
+                              >
+                                —
+                              </Typography>
+                            )}
+                          </TableCell>
+                          <TableCell sx={{ textAlign: 'center' }}>
+                            <Chip
+                              label={`${s.checklistFrequency}%`}
+                              variant='outlined'
+                              size='small'
+                              sx={{
+                                backgroundColor: '#e2e8f0',
+                                color: '#475569',
+                                border: 'none',
+                                fontWeight: 500,
+                                fontSize: '0.75rem'
+                              }}
+                            />
+                          </TableCell>
+                          <TableCell
+                            sx={{ textAlign: 'center', fontSize: '0.875rem' }}
+                          >
+                            {s.totalReports}
+                          </TableCell>
+                          <TableCell sx={{ fontSize: '0.875rem' }}>
+                            {s.hotspots.length > 0 ? (
+                              <Stack spacing={0.5}>
+                                {s.hotspots.map((hs, idx: number) => (
+                                  <Box key={idx}>
+                                    <Typography
+                                      variant='body2'
+                                      sx={{ fontWeight: 500 }}
+                                    >
+                                      {hs.name}
+                                    </Typography>
+                                    <Typography
+                                      variant='caption'
+                                      sx={{ color: '#94a3b8' }}
+                                    >
+                                      ({hs.lat.toFixed(2)}°, {hs.lng.toFixed(2)}
+                                      °)
+                                    </Typography>
+                                  </Box>
+                                ))}
+                              </Stack>
+                            ) : (
+                              <Typography
+                                variant='body2'
+                                sx={{ color: '#94a3b8' }}
+                              >
+                                No hotspots available
+                              </Typography>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      )
+                    })}
                 </TableBody>
               </Table>
             </Box>
@@ -664,6 +860,7 @@ export default function TripDetails({
               <Typography>Map view coming soon</Typography>
             </Box>
           )}
+          </Box>
         </Box>
       )}
 

@@ -157,7 +157,11 @@ export default function Dashboard({ user, token, onLogout }: DashboardProps) {
           )}
 
           {view === 'form' && (
-            <TripForm onSubmit={handleCreateTrip} token={token} error={tripError} />
+            <TripForm
+              onSubmit={handleCreateTrip}
+              token={token}
+              error={tripError}
+            />
           )}
 
           {view === 'lifeList' && (

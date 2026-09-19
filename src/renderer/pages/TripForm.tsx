@@ -7,7 +7,11 @@ interface TripFormProps {
   error?: string
 }
 
-export default function TripForm({ onSubmit, token, error: externalError }: TripFormProps) {
+export default function TripForm({
+  onSubmit,
+  token,
+  error: externalError
+}: TripFormProps) {
   const [name, setName] = useState('')
   const [location, setLocation] = useState('')
   const [startDate, setStartDate] = useState('')
@@ -37,7 +41,9 @@ export default function TripForm({ onSubmit, token, error: externalError }: Trip
     <div className='trip-form-container'>
       <h2>Plan a New Birding Trip</h2>
 
-      {(error || externalError) && <div className='alert alert-error'>{error || externalError}</div>}
+      {(error || externalError) && (
+        <div className='alert alert-error'>{error || externalError}</div>
+      )}
 
       <form onSubmit={handleSubmit} className='trip-form'>
         <div className='form-row'>

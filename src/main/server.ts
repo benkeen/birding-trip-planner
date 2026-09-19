@@ -16,8 +16,12 @@ import {
   getTripById,
   createTrip,
   updateTrip,
-  deleteTrip
+  deleteTrip,
+  getCacheData,
+  setCacheData
 } from './db'
+
+const TARGET_SPECIES_CACHE_KEY = 'target_species'
 
 export function createExpressApp(): express.Application {
   const app = express()
@@ -1054,6 +1058,59 @@ export function createExpressApp(): express.Application {
         return res.status(404).json({ error: 'Trip not found' })
       }
       res.status(204).send()
+    }
+  )
+
+  // Get previously loaded target species for a trip (persisted in trip_cache)
+  app.get(
+    '/api/trips/:id/species',
+    authMiddleware,
+    (req: Request, res: Response) => {
+      const tripId = parseInt(req.params.id)
+      const trip = getTripById(tripId, req.userId!)
+      if (!trip) {
+        return res.status(404).json({ error: 'Trip not found' })
+      }
+
+      const cached = getCacheData(tripId, TARGET_SPECIES_CACHE_KEY)
+      if (!cached) {
+        return res.json({ species: null })
+      }
+
+      try {
+        res.json({ species: JSON.parse(cached) })
+      } catch {
+        res.json({ species: null })
+      }
+    }
+  )
+
+  // Persist loaded target species for a trip so it survives navigation/restarts
+  app.put(
+    '/api/trips/:id/species',
+    authMiddleware,
+    (req: Request, res: Response) => {
+      const tripId = parseInt(req.params.id)
+      const trip = getTripById(tripId, req.userId!)
+      if (!trip) {
+        return res.status(404).json({ error: 'Trip not found' })
+      }
+
+      const { species } = req.body as { species: unknown }
+      if (!Array.isArray(species)) {
+        return res.status(400).json({ error: 'species array required' })
+      }
+
+      try {
+        setCacheData(tripId, TARGET_SPECIES_CACHE_KEY, JSON.stringify(species))
+        res.json({ success: true })
+      } catch (err) {
+        console.error('Error saving target species:', err)
+        res.status(500).json({
+          error: 'Failed to save target species',
+          details: err instanceof Error ? err.message : String(err)
+        })
+      }
     }
   )
 

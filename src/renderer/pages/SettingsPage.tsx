@@ -38,7 +38,9 @@ export default function SettingsPage({
   const [toastMessage, setToastMessage] = useState('')
   const [taxonomyCSVLoading, setTaxonomyCSVLoading] = useState(false)
   const [taxonomyCSVError, setTaxonomyCSVError] = useState('')
-  const [taxonomyCSVImportedAt, setTaxonomyCSVImportedAt] = useState<string | null>(null)
+  const [taxonomyCSVImportedAt, setTaxonomyCSVImportedAt] = useState<
+    string | null
+  >(null)
   const taxonomyCSVFileInputRef = useRef<HTMLInputElement>(null)
 
   // Fetch taxonomy CSV import status on component mount
@@ -118,13 +120,16 @@ export default function SettingsPage({
       const formData = new FormData()
       formData.append('file', file)
 
-      const response = await fetch('http://localhost:3000/api/taxonomy-csv/import', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${localStorage.getItem('auth_token')}`
-        },
-        body: formData
-      })
+      const response = await fetch(
+        'http://localhost:3000/api/taxonomy-csv/import',
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localStorage.getItem('auth_token')}`
+          },
+          body: formData
+        }
+      )
 
       if (!response.ok) {
         throw new Error(`Upload failed: ${response.status}`)
@@ -303,7 +308,8 @@ export default function SettingsPage({
 
         {taxonomyCSVImportedAt && (
           <Alert severity='success' sx={{ mb: 2 }}>
-            CSV imported on {new Date(taxonomyCSVImportedAt).toLocaleDateString()} at{' '}
+            CSV imported on{' '}
+            {new Date(taxonomyCSVImportedAt).toLocaleDateString()} at{' '}
             {new Date(taxonomyCSVImportedAt).toLocaleTimeString()}
           </Alert>
         )}
@@ -312,7 +318,11 @@ export default function SettingsPage({
           <Button
             variant='contained'
             startIcon={
-              taxonomyCSVLoading ? <CircularProgress size={20} /> : <FileUpload />
+              taxonomyCSVLoading ? (
+                <CircularProgress size={20} />
+              ) : (
+                <FileUpload />
+              )
             }
             onClick={handleImportTaxonomyCSV}
             disabled={taxonomyCSVLoading}

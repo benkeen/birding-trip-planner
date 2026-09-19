@@ -17,6 +17,15 @@ export function initializeDatabase(): void {
   const schemaPath = path.join(__dirname, '../../db/schema.sql')
   const schema = fs.readFileSync(schemaPath, 'utf-8')
   db.exec(schema)
+
+  // Create default local user if it doesn't exist
+  const userCheckStmt = db.prepare('SELECT id FROM users WHERE id = 1')
+  if (!userCheckStmt.get()) {
+    const createUserStmt = db.prepare(
+      'INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)'
+    )
+    createUserStmt.run(1, 'local@app.local', 'local')
+  }
 }
 
 export function getDatabase(): Database.Database {
@@ -119,7 +128,7 @@ export function deleteTrip(tripId: number, userId: number): boolean {
 export function getCacheData(tripId: number, cacheKey: string): string | null {
   const db = getDatabase()
   const stmt = db.prepare(
-    'SELECT data FROM trip_cache WHERE trip_id = ? AND cache_key = ? AND (expires_at IS NULL OR expires_at > datetime("now"))'
+    "SELECT data FROM trip_cache WHERE trip_id = ? AND cache_key = ? AND (expires_at IS NULL OR expires_at > datetime('now'))"
   )
   const result = stmt.get(tripId, cacheKey) as { data: string } | null
   return result?.data || null
