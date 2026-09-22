@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import type { Trip } from '@shared/types'
 import {
   Box,
@@ -133,6 +133,13 @@ export default function TripDetails({
   const [seenScientificNames, setSeenScientificNames] = useState<Set<string>>(
     new Set()
   )
+  const [selectedSpecies, setSelectedSpecies] = useState<{
+    code: string
+    common_name: string
+    scientific_name: string
+  } | null>(null)
+  // Which timespan the currently displayed `species` reflects (null until loaded)
+  const [appliedTimespan, setAppliedTimespan] = useState<number | null>(null)
 
   // Persist per-trip view preferences across app restarts
   useEffect(() => {
@@ -179,6 +186,8 @@ export default function TripDetails({
           }))
           setSpecies(normalized)
           setHasLoaded(true)
+          // Persisted cache is always the full 20-year snapshot
+          setAppliedTimespan(20)
         }
       } catch (err) {
         console.warn('Failed to load cached target species:', err)
@@ -385,6 +394,9 @@ export default function TripDetails({
           setHasLoaded(true)
           setLoading(false)
           setProgress(null)
+          // Fresh load is the full 20-year set; reconciliation applies any
+          // saved timespan afterward
+          setAppliedTimespan(20)
           console.log(`✨ Display ready: ${speciesWithData.length} species`)
 
           // Persist so returning to this page doesn't require re-requesting
@@ -464,72 +476,54 @@ export default function TripDetails({
       console.error('Failed to apply timespan:', err)
     } finally {
       setTimespanLoading(false)
+      // Record which timespan the displayed data now reflects (stops re-runs)
+      setAppliedTimespan(years)
     }
   }
 
-  // Re-aggregate once on load if a non-default timespan was restored
-  const restoredTimespan = useRef(false)
+  // Keep the displayed data in sync with the selected timespan. Self-correcting:
+  // if a reload replaces the data with the 20-year set, this re-applies.
   useEffect(() => {
-    if (checkingCache || !hasLoaded || restoredTimespan.current) return
-    restoredTimespan.current = true
-    if (timespanYears !== 20) {
-      applyTimespan(timespanYears)
-    }
+    if (checkingCache || !hasLoaded || timespanLoading) return
+    if (appliedTimespan === null || appliedTimespan === timespanYears) return
+    applyTimespan(timespanYears)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [checkingCache, hasLoaded])
+  }, [
+    checkingCache,
+    hasLoaded,
+    timespanLoading,
+    appliedTimespan,
+    timespanYears
+  ])
 
-  const filteredSpecies = species.filter((s) => {
+  const searchQuery = searchFilter.trim().toLowerCase()
+
+  // Species passing the Lifers-only toggle (text filter applied per view)
+  const lifersFilteredSpecies = species.filter(
+    (s) =>
+      !lifersOnly ||
+      !seenScientificNames.has(s.scientific_name.trim().toLowerCase())
+  )
+
+  // Species tab: match on species name or any of its location names
+  const filteredSpecies = lifersFilteredSpecies.filter((s) => {
+    if (!searchQuery) return true
     if (
-      lifersOnly &&
-      seenScientificNames.has(s.scientific_name.trim().toLowerCase())
+      s.common_name.toLowerCase().includes(searchQuery) ||
+      s.scientific_name.toLowerCase().includes(searchQuery)
     ) {
-      return false
+      return true
     }
-    const q = searchFilter.trim().toLowerCase()
-    if (!q) return true
-    return (
-      s.common_name.toLowerCase().includes(q) ||
-      s.scientific_name.toLowerCase().includes(q)
-    )
+    return s.locations.some((l) => l.name.toLowerCase().includes(searchQuery))
   })
-
-  const uniqueLocationCount = new Set(
-    filteredSpecies.flatMap((s) =>
-      s.locations.map((l) => `${l.name}|${l.lat}|${l.lng}`)
-    )
-  ).size
-
-  // Aggregate observation locations across the filtered species for the map
-  const mapLocations: MapLocation[] = (() => {
-    const byKey = new Map<string, MapLocation>()
-    for (const s of filteredSpecies) {
-      for (const l of s.locations) {
-        if (typeof l.lat !== 'number' || typeof l.lng !== 'number') continue
-        if (l.lat === 0 && l.lng === 0) continue
-        const key = `${l.name}|${l.lat}|${l.lng}`
-        const existing = byKey.get(key)
-        if (existing) {
-          existing.count += l.count
-        } else {
-          byKey.set(key, {
-            name: l.name,
-            lat: l.lat,
-            lng: l.lng,
-            count: l.count
-          })
-        }
-      }
-    }
-    return Array.from(byKey.values())
-  })()
 
   const mapFallbackCenter: [number, number] = [
     typeof trip.latitude === 'number' ? trip.latitude : 20,
     typeof trip.longitude === 'number' ? trip.longitude : 0
   ]
 
-  // Group species by location for the Locations tab
-  const locationRows = (() => {
+  // Group species by location (respecting the Lifers-only toggle)
+  const allLocationRows = (() => {
     const byKey = new Map<
       string,
       {
@@ -545,7 +539,7 @@ export default function TripDetails({
         }>
       }
     >()
-    for (const s of filteredSpecies) {
+    for (const s of lifersFilteredSpecies) {
       for (const l of s.locations) {
         const key = `${l.name}|${l.lat}|${l.lng}`
         let entry = byKey.get(key)
@@ -573,6 +567,34 @@ export default function TripDetails({
     rows.sort((a, b) => b.species.length - a.species.length)
     return rows
   })()
+
+  // Locations tab: match on location name or any species name
+  const locationRows = allLocationRows.filter((row) => {
+    if (!searchQuery) return true
+    if (row.name.toLowerCase().includes(searchQuery)) return true
+    return row.species.some(
+      (sp) =>
+        sp.common_name.toLowerCase().includes(searchQuery) ||
+        sp.scientific_name.toLowerCase().includes(searchQuery)
+    )
+  })
+
+  const uniqueLocationCount = locationRows.length
+
+  // Map markers derived from the filtered location rows
+  const mapLocations: MapLocation[] = locationRows
+    .filter(
+      (row) =>
+        typeof row.lat === 'number' &&
+        typeof row.lng === 'number' &&
+        !(row.lat === 0 && row.lng === 0)
+    )
+    .map((row) => ({
+      name: row.name,
+      lat: row.lat,
+      lng: row.lng,
+      count: row.totalCount
+    }))
 
   return (
     <Container
@@ -717,6 +739,58 @@ export default function TripDetails({
         </DialogActions>
       </Dialog>
 
+      {/* Shared species dialog (reused for every species link) */}
+      <Dialog
+        open={selectedSpecies !== null}
+        onClose={() => setSelectedSpecies(null)}
+        maxWidth='xs'
+        fullWidth
+      >
+        <DialogTitle sx={{ fontSize: '1.1rem', pb: 0.5 }}>
+          {selectedSpecies?.common_name}
+        </DialogTitle>
+        <DialogContent sx={{ pt: '8px !important' }}>
+          <Typography
+            variant='body2'
+            sx={{ color: '#64748b', fontStyle: 'italic', mb: 1 }}
+          >
+            {selectedSpecies?.scientific_name}
+          </Typography>
+          {selectedSpecies &&
+            seenScientificNames.has(
+              selectedSpecies.scientific_name.trim().toLowerCase()
+            ) && (
+              <Chip
+                icon={<CheckCircle sx={{ fontSize: '1rem' }} />}
+                label='On your life list'
+                size='small'
+                sx={{
+                  backgroundColor: '#dcfce7',
+                  color: '#16a34a',
+                  fontWeight: 500
+                }}
+              />
+            )}
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={() => setSelectedSpecies(null)}
+            sx={{ textTransform: 'none', boxShadow: 'none' }}
+          >
+            Close
+          </Button>
+          <Button
+            variant='contained'
+            onClick={() => {
+              if (selectedSpecies) openSpeciesPage(selectedSpecies.code)
+            }}
+            sx={{ textTransform: 'none', boxShadow: 'none' }}
+          >
+            View on eBird
+          </Button>
+        </DialogActions>
+      </Dialog>
+
       {/* Initial cache check — show a spinner until we know if data exists */}
       {checkingCache && (
         <Box sx={{ display: 'flex', justifyContent: 'center', py: 8 }}>
@@ -821,7 +895,7 @@ export default function TripDetails({
             }}
           >
             <TextField
-              placeholder='Search species…'
+              placeholder='Filter species / locations'
               value={searchFilter}
               onChange={(e) => setSearchFilter(e.target.value)}
               size='small'
@@ -1163,12 +1237,26 @@ export default function TripDetails({
                                       py: 0.25
                                     }}
                                   >
-                                    <Typography
+                                    <Link
+                                      component='button'
+                                      type='button'
                                       variant='caption'
-                                      sx={{ color: '#1e293b' }}
+                                      underline='hover'
+                                      onClick={() =>
+                                        setSelectedSpecies({
+                                          code: sp.code,
+                                          common_name: sp.common_name,
+                                          scientific_name: sp.scientific_name
+                                        })
+                                      }
+                                      sx={{
+                                        color: '#2563eb',
+                                        textAlign: 'left',
+                                        cursor: 'pointer'
+                                      }}
                                     >
                                       {sp.common_name}
-                                    </Typography>
+                                    </Link>
                                     <Typography
                                       variant='caption'
                                       sx={{
