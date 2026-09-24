@@ -27,7 +27,13 @@ import {
   Link,
   Tooltip
 } from '@mui/material'
-import { ArrowBack, Refresh, Edit, CheckCircle } from '@mui/icons-material'
+import {
+  ArrowBack,
+  Refresh,
+  Edit,
+  CheckCircle,
+  FileDownload
+} from '@mui/icons-material'
 import TripMap, { type MapLocation } from '../components/TripMap'
 
 interface TripDetailsProps {
@@ -596,6 +602,66 @@ export default function TripDetails({
       count: row.totalCount
     }))
 
+  // Download the currently visible tab data as CSV
+  const exportCsv = () => {
+    const escape = (v: string | number) => {
+      const s = String(v ?? '')
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+    }
+    const toCsv = (headers: string[], rows: (string | number)[][]) =>
+      [headers, ...rows].map((r) => r.map(escape).join(',')).join('\n')
+
+    let csv = ''
+    let suffix = ''
+    if (activeTab === 'species') {
+      suffix = 'species'
+      csv = toCsv(
+        [
+          'Common Name',
+          'Scientific Name',
+          'Seen',
+          'Checklist Frequency (%)',
+          'Total Reports',
+          'Locations'
+        ],
+        filteredSpecies.map((s) => [
+          s.common_name,
+          s.scientific_name,
+          seenScientificNames.has(s.scientific_name.trim().toLowerCase())
+            ? 'Yes'
+            : 'No',
+          s.checklistFrequency,
+          s.totalReports,
+          s.locations.length
+        ])
+      )
+    } else if (activeTab === 'locations') {
+      suffix = 'locations'
+      csv = toCsv(
+        ['Location', 'Total Observations', 'Species Count', 'Species'],
+        locationRows.map((loc) => [
+          loc.name,
+          loc.totalCount,
+          loc.species.length,
+          loc.species.map((sp) => `${sp.common_name} (${sp.count})`).join('; ')
+        ])
+      )
+    } else {
+      return
+    }
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    const safeName = trip.name.replace(/[^\w-]+/g, '_')
+    link.href = url
+    link.download = `${safeName}-${suffix}.csv`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+  }
+
   return (
     <Container
       maxWidth='lg'
@@ -649,15 +715,27 @@ export default function TripDetails({
           </IconButton>
         </Box>
         {hasLoaded && species.length > 0 && (
-          <Button
-            size='small'
-            startIcon={<Refresh />}
-            onClick={() => loadSpecies(true)}
-            disabled={loading}
-            sx={{ textTransform: 'none', flexShrink: 0, boxShadow: 'none' }}
-          >
-            {loading ? 'Refreshing...' : 'Refresh'}
-          </Button>
+          <Box sx={{ display: 'flex', gap: 1, flexShrink: 0 }}>
+            {activeTab !== 'map' && (
+              <Button
+                size='small'
+                startIcon={<FileDownload />}
+                onClick={exportCsv}
+                sx={{ textTransform: 'none', boxShadow: 'none' }}
+              >
+                Export
+              </Button>
+            )}
+            <Button
+              size='small'
+              startIcon={<Refresh />}
+              onClick={() => loadSpecies(true)}
+              disabled={loading}
+              sx={{ textTransform: 'none', boxShadow: 'none' }}
+            >
+              {loading ? 'Refreshing...' : 'Refresh'}
+            </Button>
+          </Box>
         )}
       </Box>
 
